@@ -32,13 +32,17 @@ pub fn connect(path: &Path) -> io::Result<SnapshotStream> {
 }
 
 impl SnapshotStream {
-    /// `None` means the daemon closed the connection.
+    /// `None` means the daemon closed the connection, or a read error
+    /// occurred (logged to stderr before returning).
     pub fn next_snapshot(&mut self) -> Option<Result<Snapshot, ProtoError>> {
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => None,
             Ok(_) => Some(decode(&line)),
-            Err(_) => None,
+            Err(e) => {
+                eprintln!("wisp-hud: read error: {e}");
+                None
+            }
         }
     }
 }
