@@ -2,14 +2,9 @@
 
 **A light over the fight.**
 
-EverQuest log parser and in-game overlay for Linux and Steam Deck.
+EverQuest Legends log parser and in-game overlay for Linux and Steam Deck.
 
 ---
-
-> [!NOTE]
-> **Nothing is built yet.** This repository currently contains its founding
-> documents only — the licence, the provenance record, and the charter that
-> governs what may be written here. Code begins with Spec 1.
 
 ## What this will be
 
@@ -17,7 +12,7 @@ A headless parser plus a small in-game overlay, for Linux only.
 
 | Component | Role |
 |---|---|
-| `wispd` | Headless parser. Tails the EverQuest text log and emits state snapshots over IPC. No UI, no display connection. |
+| `wispd` | Headless parser. Tails the EverQuest Legends text log and emits state snapshots over IPC. No UI, no display connection. |
 | `wisp` | CLI and control client — configuration, diagnostics, status. |
 | `wisp-hud` | Overlay renderer. Attaches to whichever display the game is on and draws the HUD. |
 
@@ -58,10 +53,19 @@ in the CLI and a config file instead.
 | Spec | Subject | State |
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Approved · [implementation plan ready](docs/plans/2026-09-08-spec-1-the-spine.md) |
+| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — real-game verification pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | Parser and encounter model | Not started |
 | 3 | HUD surfaces and interaction | Not started |
 | 4 | Packaging and distribution | Not started |
+
+Spec 1's overlay backends and log parser are implemented and covered by
+automated tests, plus manual readback against a real X/Wayland session on
+the development machine. **Gamescope click-through and handheld (Steam
+Deck / Legion Go S) support are claimed but not yet verified on that
+hardware** — both require a human playing EverQuest Legends under
+gamescope with a real pointer grab, which no agent working on this
+repository is permitted to simulate. See `PROVENANCE.md` for exactly what
+was and was not verified, and how.
 
 ## Provenance
 
