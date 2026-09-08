@@ -320,8 +320,17 @@ impl OverlayBackend for LayerShellBackend {
         let _ = buffer.attach_to(wl_surface);
         layer.commit();
 
-        let _ = event_queue.flush();
-        let _ = event_queue.dispatch_pending(state);
+        // A roundtrip -- not flush() + dispatch_pending() -- is what actually
+        // reads the socket. flush() only writes, and dispatch_pending() only
+        // replays events already buffered client-side; neither performs the
+        // recv() that delivers wl_buffer.release. Without a real read here,
+        // released buffers are never returned to the pool and it grows
+        // without bound. A roundtrip returns as soon as the compositor
+        // answers the sync request, so this does not wait for a frame
+        // callback -- the daemon still drives the presentation cadence.
+        if let Err(e) = event_queue.roundtrip(state) {
+            eprintln!("wisp-hud: layer-shell backend: roundtrip failed: {e}");
+        }
     }
 }
 
