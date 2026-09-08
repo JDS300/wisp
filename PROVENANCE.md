@@ -223,3 +223,52 @@ be verified with real pixels on real hardware, not inferred.
   project metadata, `README.md`, `LICENSE`, `NOTICE` and `.csproj` files;
   no implementation source read. Building Wisp on `EQBuddy.Core` was considered
   and explicitly rejected in favour of independence. See the disclosure above.
+
+### 2026-09-08 — gamescope overlay backend: stand-in verification
+
+Task 6 (Milestone 2) implemented the gamescope X11 overlay backend
+(`crates/wisp-hud/src/backend/gamescope_x11.rs`): an ordinary, unprivileged
+X11 client window inside gamescope's XWayland, marked with
+`GAMESCOPE_EXTERNAL_OVERLAY=1` and `GAMESCOPE_NO_FOCUS=1`, with an empty
+XFixes input-shape region set belt-and-braces.
+
+What was actually verified, against a real X server, with `glxgears` standing
+in for EverQuest (per the constraints, `vkcube` is a poor stand-in and
+launching EverQuest or Lutris, or synthesising input via `xdotool`/`XTEST`,
+is off-limits on this machine):
+
+- `wispd --stub` running, `gamescope -W 2560 -H 1440 -w 2560 -h 1440 -b --
+  glxgears` launched cleanly on the desktop's NVIDIA 610.57.04 driver with
+  those flags (no `--force-grab-cursor`, matching the brief's Step 6, not the
+  full test-rig invocation).
+- Gamescope's XWayland was `:1` (17 `GAMESCOPE_*` root properties; `:2` and
+  `:3` had none).
+- `wisp-hud` launched with `DISPLAY=:1`, chose the `GamescopeX11` backend
+  automatically (via `root_atom_names()`), and logged that it selected a
+  depth-32 ARGB visual (gamescope's XWayland offers one, so the depth-24
+  BGRX fallback path did not run this time).
+- `xwininfo -root -children` on `:1` found the HUD's window at
+  `0x600000`, geometry `400x80+0+0` alongside `glxgears`'s window and
+  `steamcompmgr`.
+- `xwininfo -id 0x600000 -stats` confirmed `Depth: 32`, `Visual Class:
+  TrueColor`, `Override Redirect State: yes`.
+- `xprop -id 0x600000` read back both atoms:
+  ```
+  GAMESCOPE_NO_FOCUS(CARDINAL) = 1
+  GAMESCOPE_EXTERNAL_OVERLAY(CARDINAL) = 1
+  ```
+- `wisp-hud` ran for its full window without an X protocol error (no BadMatch
+  from the ARGB window/colormap setup, no failed `put_image` on repeated
+  240ms-interval snapshots from the stub daemon).
+- All processes (`wisp-hud`, `gamescope`, `glxgears`, `wispd`) were killed
+  afterward and `pgrep` confirmed none remained; the socket file was removed.
+
+**Not verified, and not attempted:** whether `GAMESCOPE_NO_FOCUS` or the empty
+input region actually deliver click-through against a real pointer grab, and
+whether the HUD is visible and non-interfering over the real game. Both
+require a human playing EverQuest under gamescope with
+`--force-grab-cursor` and confirming mouse-look behaves identically with the
+HUD running and not running —**pending JDS300**. The spec's risk table
+(`docs/specs/2026-09-08-spec-1-the-spine.md`) is left unchanged:
+`GAMESCOPE_NO_FOCUS` stays recorded as unproven until that human check
+happens.

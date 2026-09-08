@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+pub mod gamescope_x11;
+
 /// One frame of premultiplied-alpha RGBA, top-left origin.
 pub struct Frame {
     pub width: u32,
