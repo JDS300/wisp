@@ -4,6 +4,7 @@
 use std::fmt;
 
 pub mod gamescope_x11;
+pub mod layer_shell;
 
 /// One frame of premultiplied-alpha RGBA, top-left origin.
 pub struct Frame {

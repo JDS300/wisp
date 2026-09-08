@@ -25,7 +25,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("layer-shell") => BackendKind::WlrLayerShell,
         Some("plain") => BackendKind::PlainWindow,
         Some(other) => return Err(format!("unknown backend: {other}").into()),
-        None => backend::choose(&backend::gamescope_x11::root_atom_names(), &[]),
+        None => backend::choose(
+            &backend::gamescope_x11::root_atom_names(),
+            &backend::layer_shell::wayland_globals(),
+        ),
     };
     eprintln!("wisp-hud: backend {kind:?}, scale {scale}px");
 
@@ -33,6 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::GamescopeX11 => {
             Box::new(backend::gamescope_x11::GamescopeX11Backend::new(400, 80))
         }
+        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(400, 80)),
         other => return Err(format!("{other:?} is not implemented yet").into()),
     };
     surface.attach()?;
