@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fontdue = "0.9.4"
 wisp-proto = { path = "../wisp-proto" }

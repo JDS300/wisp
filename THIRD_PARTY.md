@@ -11,4 +11,6 @@ Recorded per the [clean-room charter](docs/specs/2026-09-08-clean-room-charter.m
 
 ## Vendored
 
-*(none yet — a font is added in a later task)*
+- **DejaVu Sans Mono** (`assets/DejaVuSansMono.ttf`) — DejaVu Fonts License, a
+  permissive Bitstream Vera derivative. Used to rasterise HUD text. Chosen
+  because it is monospaced, so a changing number does not reflow the overlay.
