@@ -60,13 +60,25 @@ impl Server {
         loop {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
+                    // `set_nonblocking` on the listener does not propagate to
+                    // sockets it accepts -- each one starts out blocking and
+                    // must be switched over here. Without this, a client that
+                    // stops reading would make a later `write_all` in
+                    // `broadcast` block forever, stalling every other client.
+                    if stream.set_nonblocking(true).is_err() {
+                        // Could not prepare the stream; treat like a failed handshake.
+                        continue;
+                    }
                     if stream.write_all(encode(current).as_bytes()).is_ok() {
                         let _ = stream.flush();
                         self.clients.push(stream);
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                Err(e) => {
+                    eprintln!("wispd: accept error: {e}");
+                    break;
+                }
             }
         }
     }
@@ -160,5 +172,37 @@ mod tests {
         std::fs::write(&path, b"not a socket").unwrap();
         // Must not fail with EADDRINUSE.
         let _server = Server::bind(&path).unwrap();
+    }
+
+    #[test]
+    fn a_client_that_never_reads_is_dropped_rather_than_stalling_the_server() {
+        let path = temp_socket("slow-reader");
+        let mut server = Server::bind(&path).unwrap();
+        let client = UnixStream::connect(&path).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+
+        // Never read from `client`, so its kernel receive buffer (and this
+        // process's send buffer for it) eventually fills. A correct server
+        // must notice the resulting write failure and drop the client
+        // rather than blocking forever on `write_all`. Bounded so a
+        // regression to a blocking write hangs `cargo test` (and gets
+        // killed by an external `timeout`) instead of spinning here
+        // forever.
+        let full = snapshot(2, 0);
+        let mut dropped = false;
+        for _ in 0..20_000 {
+            server.broadcast(&full);
+            if server.client_count() == 0 {
+                dropped = true;
+                break;
+            }
+        }
+
+        assert!(
+            dropped,
+            "a client that never reads its socket must eventually be reaped"
+        );
+        assert_eq!(server.client_count(), 0);
+        drop(client);
     }
 }
