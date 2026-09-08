@@ -107,6 +107,11 @@ dependencies = [
 [[package]]
 name = "wispd"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wisp-proto",
+]
 
 [[package]]
 name = "zmij"
