@@ -394,3 +394,64 @@ from the desktop (`DISPLAY` pointed at KDE's XWayland, not gamescope's).
   without it.
 - Plain-window click-through.
 - The Legion Go S / handheld target.
+
+### 2026-09-08 — gamescope overlay backend: verified in-game by JDS300; Milestone 2 closed
+
+Following the layer-shell entry above, JDS300 exercised the `GamescopeX11`
+backend itself, on the same desktop test rig (see
+`docs/plans/2026-09-08-spec-1-the-spine.md`, "Global Constraints — The test
+rig"), with EverQuest Legends already running under his normal gamescope
+session and `wispd --log <live log>` already running.
+
+`pgrep -a gamescope` showed the session in flight:
+
+```
+gamescope -w 2560 -h 1440 -W 2560 -H 1440 -b --force-grab-cursor -- gamemoderun /usr/bin/umu-run …/EverQuest Legends/LaunchPad.exe
+```
+
+He found gamescope's own XWayland by process, not by guessing a display
+number: `pgrep -a Xwayland` showed `Xwayland :1 -rootless -core -terminate
+…`, and `env DISPLAY=:1 xprop -root` confirmed it as gamescope's, carrying
+`GAMESCOPE_INPUT_COUNTER`, `GAMESCOPE_HDR_OUTPUT_FEEDBACK`,
+`GAMESCOPE_DISPLAY_IS_EXTERNAL`, `GAMESCOPE_VRR_ENABLED`, among others.
+
+He then ran, from `target/release`:
+
+```
+env DISPLAY=:1 ./wisp-hud
+```
+
+stderr, verbatim:
+
+```
+wisp-hud: backend GamescopeX11, scale 48px
+wisp-hud: x11 backend: using a depth-32 ARGB visual
+wisp-hud: connected to /run/user/1000/wisp/wispd.sock
+```
+
+In his words: "seems to overlay just fine while in game. Killed 2 things and
+it updated." Asked whether mouse-look (right-click look, camera turning) was
+identical to playing without the HUD, he answered: "Yes, identical."
+
+**What this proves:** Spec 1 Milestone 2 as written ("a number over
+EverQuest, in JDS300's normal gamescope session") — done. The §3 invariant
+holds for the `GamescopeX11` backend against gamescope's
+`--force-grab-cursor` pointer grab. `GAMESCOPE_NO_FOCUS` together with the
+empty XFixes input region delivers click-through on this rig — the spec's
+§7 first risk row. The two measures were set together, so this evidence does
+not separate which one is doing the work. The depth-32 ARGB visual path is
+the one that actually runs on this rig, not the depth-24 BGRX fallback.
+Automatic backend selection picks `GamescopeX11` when `DISPLAY` points at
+gamescope's own XWayland.
+
+**Not verified:** no screen capture or photograph was attached to this run.
+Plain-window click-through remains as recorded above. The Legion Go S /
+handheld target (Milestone 6) is the same code on different hardware and
+remains open.
+
+**A practical finding worth recording:** on this rig, listing
+`/tmp/.X11-unix/` through a fish loop gave misleading results because the
+user's `ls` alias prints file-type icons, which corrupted the parsed
+display numbers as zeros. `pgrep -a Xwayland` is the reliable way to find
+gamescope's display number, and `env DISPLAY=<n> xprop -root` confirms it by
+its `GAMESCOPE_*` root properties before anything is launched against it.

@@ -53,22 +53,22 @@ in the CLI and a config file instead.
 | Spec | Subject | State |
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest on the desktop via layer-shell; gamescope backend and handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
+| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | Parser and encounter model | Not started |
 | 3 | HUD surfaces and interaction | Not started |
 | 4 | Packaging and distribution | Not started |
 
 Spec 1's overlay backends and log parser are implemented and covered by
-automated tests. **On 2026-09-08, JDS300 verified the layer-shell backend
-live over EverQuest Legends on the desktop:** the kill counter ran above a
-gamescope session with `--force-grab-cursor`, mouse-look unaffected. **The
-gamescope X11 backend in-game, plain-window click-through, and handheld
-(Steam Deck / Legion Go S) support remain claimed but unverified** — see
-`PROVENANCE.md` for exactly what was and was not verified, and how. When the
-game runs under gamescope on a desktop compositor with layer-shell,
-launching `wisp-hud` from the desktop selects layer-shell, which works; to
-use the gamescope backend instead, launch `wisp-hud` with `DISPLAY` set to
-gamescope's own XWayland display.
+automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and
+gamescope X11 backends live over EverQuest Legends on the desktop:** each
+ran the kill counter live above his gamescope session with
+`--force-grab-cursor`, mouse-look unaffected. **Plain-window click-through
+and handheld (Steam Deck / Legion Go S) support remain claimed but
+unverified** — see `PROVENANCE.md` for exactly what was and was not
+verified, and how. Launching `wisp-hud` from the desktop with no flags
+selects layer-shell; to use the gamescope backend instead, find gamescope's
+own XWayland with `pgrep -a Xwayland` and launch `wisp-hud` with `DISPLAY`
+set to that number.
 
 ## Provenance
 
