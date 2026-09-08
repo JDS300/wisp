@@ -346,3 +346,51 @@ window coordinates matched (no reparenting frame offset).
 
 **Still not verified, and not attempted:** actual click-through against a
 real pointer grab — requires a human, as before — **pending JDS300**.
+
+### 2026-09-08 — layer-shell backend: verified live over EverQuest Legends by JDS300
+
+JDS300 played EverQuest Legends on the desktop test rig (KDE Plasma on
+Wayland, NVIDIA, three displays; EverQuest Legends launched through Lutris
+with `gamescope`, `--force-grab-cursor`, borderless 2560x1440 — see
+`docs/plans/2026-09-08-spec-1-the-spine.md`, "Global Constraints — The test
+rig") with `wispd` and `wisp-hud` both running.
+
+The exact launch: `wispd --log <live log>` and `wisp-hud`, from a normal
+desktop terminal, with **no `--backend` flag and no `DISPLAY` override**.
+Automatic backend selection ran against `DISPLAY=:0`, which is KDE's own
+XWayland, not gamescope's — it carries no `GAMESCOPE_*` root properties, so
+selection fell through to the layer-shell check, and KWin advertises
+`zwlr_layer_shell_v1`. JDS300 confirmed the backend by reading `wisp-hud`'s
+stderr: it printed **`WlrLayerShell`**.
+
+In his words: "Loaded up everything, the kill counter is resting on top of
+everquest. No mouse issues and I confirmed its reading the log by killing
+something." He did not set anything with gamescope himself; only `wispd`
+with the log path and `wisp-hud` ran.
+
+What was observed: the layer-shell overlay surface drew the live kill
+counter above the gamescope window hosting the game; mouse-look was
+unaffected while playing under `--force-grab-cursor`; the counter
+incremented in response to an in-game kill. No screen capture was attached.
+
+**What this proves:** the §3 invariant ("the HUD never takes input") holds
+for the `WlrLayerShell` backend against a real pointer grab, on this rig;
+the full live path — log file → `wispd` → socket → `wisp-hud` — works
+end-to-end against the real game, not `wispd --stub`; automatic backend
+selection chooses `WlrLayerShell` on this rig when `wisp-hud` is launched
+from the desktop (`DISPLAY` pointed at KDE's XWayland, not gamescope's).
+
+**Not verified:**
+
+- The `GamescopeX11` backend in-game. It was not the backend that ran here —
+  automatic selection chose `WlrLayerShell` because `wisp-hud` inherited
+  `DISPLAY=:0`, KDE's XWayland. To exercise `GamescopeX11`, `wisp-hud` must
+  be launched with `DISPLAY` pointed at gamescope's own XWayland display
+  (e.g. `DISPLAY=:1`).
+- `GAMESCOPE_NO_FOCUS` click-through — still unproven; the spec's risk table
+  is unchanged by this entry.
+- The spec's Milestone 4 as literally written ("launched without
+  gamescope") — the game was running under gamescope, per the test rig, not
+  without it.
+- Plain-window click-through.
+- The Legion Go S / handheld target.
