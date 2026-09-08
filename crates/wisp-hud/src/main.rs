@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 mod client;
+#[allow(dead_code)] // wired into main in Task 6
+mod backend;
 
 fn main() -> std::io::Result<()> {
     let path = client::socket_path();
