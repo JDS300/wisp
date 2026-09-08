@@ -36,7 +36,7 @@ impl std::error::Error for BackendError {}
 /// never receives pointer or keyboard input. See the charter invariant.
 pub trait OverlayBackend {
     fn attach(&mut self) -> Result<(), BackendError>;
-    fn present(&mut self, frame: &Frame);
+    fn present(&mut self, frame: &Frame) -> Result<(), BackendError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

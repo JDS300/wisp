@@ -130,9 +130,10 @@ impl OverlayBackend for PlainWindowBackend {
         Ok(())
     }
 
-    fn present(&mut self, frame: &Frame) {
-        if let Some(surface) = &self.surface {
-            surface.present(frame);
+    fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
+        match &self.surface {
+            Some(surface) => surface.present(frame),
+            None => Ok(()),
         }
     }
 }

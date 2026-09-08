@@ -112,8 +112,11 @@ impl X11Surface {
             };
 
         let mut values = CreateWindowAux::new()
-            // Deliberately no input events. The HUD never takes input.
-            .event_mask(EventMask::EXPOSURE);
+            // Deliberately no input events, and no EXPOSURE either: nothing
+            // redraws on expose, `present` repaints the whole window at
+            // 5 Hz, so there is no reason to receive -- and no reason to
+            // drain -- an X event queue at all.
+            .event_mask(EventMask::NO_EVENT);
         if override_redirect {
             values = values.override_redirect(1u32);
         }
@@ -200,28 +203,39 @@ impl X11Surface {
         Ok(())
     }
 
-    pub fn present(&self, frame: &Frame) {
+    pub fn present(&self, frame: &Frame) -> Result<(), BackendError> {
         let (wire, draw_w, draw_h) = frame_to_wire(frame, self.width, self.height, self.format, self.msb_first);
         if draw_w == 0 || draw_h == 0 {
-            return;
+            return Ok(());
         }
 
         // 0-width/height is X11 shorthand for "to the edge of the window",
         // clearing anything a shorter previous frame left behind.
         let _ = self.conn.clear_area(false, self.window, 0, 0, 0, 0);
-        let _ = self.conn.put_image(
-            ImageFormat::Z_PIXMAP,
-            self.window,
-            self.gc,
-            draw_w as u16,
-            draw_h as u16,
-            0,
-            0,
-            0,
-            self.depth,
-            &wire,
-        );
-        let _ = self.conn.flush();
+        // `.check()` forces a round trip so a dead window (BadDrawable,
+        // BadWindow -- the compositor closed us, or the window was
+        // destroyed out from under us) is reported here rather than
+        // silently dropped. One round trip per frame at 5 Hz is cheap.
+        self.conn
+            .put_image(
+                ImageFormat::Z_PIXMAP,
+                self.window,
+                self.gc,
+                draw_w as u16,
+                draw_h as u16,
+                0,
+                0,
+                0,
+                self.depth,
+                &wire,
+            )
+            .map_err(|e| BackendError::Failed(e.to_string()))?
+            .check()
+            .map_err(|e| BackendError::Failed(e.to_string()))?;
+        self.conn
+            .flush()
+            .map_err(|e| BackendError::Failed(e.to_string()))?;
+        Ok(())
     }
 }
 

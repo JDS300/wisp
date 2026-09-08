@@ -52,7 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match item {
             Ok(snap) => {
                 let frame = renderer.render(&format!("{} kills", snap.session_kills));
-                surface.present(&frame);
+                if let Err(e) = surface.present(&frame) {
+                    eprintln!("wisp-hud: {e}");
+                    std::process::exit(1);
+                }
             }
             Err(e) => {
                 eprintln!("wisp-hud: {e}");

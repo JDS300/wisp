@@ -248,7 +248,17 @@ impl OverlayBackend for LayerShellBackend {
             closed: false,
         };
 
+        // Bounded, not an unconditional loop: a compositor that never sends
+        // a configure (misbehaving, or a layer-shell version that silently
+        // rejects the surface) must not hang attach() forever.
+        let configure_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !state.configured && !state.closed {
+            if std::time::Instant::now() >= configure_deadline {
+                return Err(BackendError::Failed(
+                    "timed out waiting for the compositor to configure the layer surface"
+                        .to_string(),
+                ));
+            }
             event_queue
                 .blocking_dispatch(&mut state)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
@@ -270,9 +280,9 @@ impl OverlayBackend for LayerShellBackend {
         Ok(())
     }
 
-    fn present(&mut self, frame: &Frame) {
+    fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
         if frame.width == 0 || frame.height == 0 {
-            return;
+            return Ok(());
         }
         let (Some(event_queue), Some(state), Some(pool), Some(layer)) = (
             self.event_queue.as_mut(),
@@ -280,7 +290,7 @@ impl OverlayBackend for LayerShellBackend {
             self.pool.as_mut(),
             self.layer.as_ref(),
         ) else {
-            return;
+            return Ok(());
         };
 
         let width = self.width;
@@ -289,7 +299,7 @@ impl OverlayBackend for LayerShellBackend {
         let Ok((buffer, canvas)) =
             pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
         else {
-            return;
+            return Ok(());
         };
 
         // Transparent everywhere, then copy the frame into the top-left,
@@ -328,9 +338,19 @@ impl OverlayBackend for LayerShellBackend {
         // without bound. A roundtrip returns as soon as the compositor
         // answers the sync request, so this does not wait for a frame
         // callback -- the daemon still drives the presentation cadence.
+        //
+        // The roundtrip also dispatches `closed`, so a compositor that tore
+        // down the layer surface between frames is caught here rather than
+        // presenting silently into a dead surface forever.
         if let Err(e) = event_queue.roundtrip(state) {
-            eprintln!("wisp-hud: layer-shell backend: roundtrip failed: {e}");
+            return Err(BackendError::Failed(format!("roundtrip failed: {e}")));
         }
+        if state.closed {
+            return Err(BackendError::Failed(
+                "compositor closed the layer surface".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
