@@ -37,16 +37,36 @@ impl OverlayBackend for PlainWindowBackend {
         let surface = X11Surface::create(self.width, self.height, false)?;
         let conn = &surface.conn;
 
-        // Optional but helpful: tell the window manager what kind of window
-        // this is, so it does not e.g. give it a taskbar entry.
+        // REQUIRED for the invariant: _NET_WM_WINDOW_TYPE_DOCK. Per the EWMH
+        // spec a dock is undecorated and kept above by definition -- unlike
+        // UTILITY, which KWin (and others) decorate with a titlebar and
+        // frame, giving the window manager's frame its own clickable,
+        // draggable, resizable, closable surface that the XFixes input
+        // region on the client window cannot reach.
         let window_type_atom = intern_atom(conn, "_NET_WM_WINDOW_TYPE")?;
-        let utility_atom = intern_atom(conn, "_NET_WM_WINDOW_TYPE_UTILITY")?;
+        let dock_atom = intern_atom(conn, "_NET_WM_WINDOW_TYPE_DOCK")?;
         conn.change_property32(
             PropMode::REPLACE,
             surface.window,
             window_type_atom,
             AtomEnum::ATOM,
-            &[utility_atom],
+            &[dock_atom],
+        )
+        .map_err(|e| BackendError::Failed(e.to_string()))?;
+
+        // Belt and braces for window managers that decorate DOCK anyway:
+        // _MOTIF_WM_HINTS with MWM_HINTS_DECORATIONS set and decorations = 0
+        // asks explicitly for no frame. Format 32, 5 values: flags,
+        // functions, decorations, input_mode, status. The property's type is
+        // the _MOTIF_WM_HINTS atom itself, not ATOM or CARDINAL.
+        const MWM_HINTS_DECORATIONS: u32 = 1 << 1;
+        let motif_wm_hints_atom = intern_atom(conn, "_MOTIF_WM_HINTS")?;
+        conn.change_property32(
+            PropMode::REPLACE,
+            surface.window,
+            motif_wm_hints_atom,
+            motif_wm_hints_atom,
+            &[MWM_HINTS_DECORATIONS, 0, 0, 0, 0],
         )
         .map_err(|e| BackendError::Failed(e.to_string()))?;
 
@@ -61,16 +81,19 @@ impl OverlayBackend for PlainWindowBackend {
             .set(conn, surface.window)
             .map_err(|e| BackendError::Failed(e.to_string()))?;
 
-        // Belt and braces: set _NET_WM_STATE to ABOVE before mapping, since
-        // most window managers honour this property at map time.
+        // Belt and braces: set _NET_WM_STATE to ABOVE + SKIP_TASKBAR +
+        // SKIP_PAGER before mapping, since most window managers honour this
+        // property at map time.
         let net_wm_state_atom = intern_atom(conn, "_NET_WM_STATE")?;
         let above_atom = intern_atom(conn, "_NET_WM_STATE_ABOVE")?;
+        let skip_taskbar_atom = intern_atom(conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
+        let skip_pager_atom = intern_atom(conn, "_NET_WM_STATE_SKIP_PAGER")?;
         conn.change_property32(
             PropMode::REPLACE,
             surface.window,
             net_wm_state_atom,
             AtomEnum::ATOM,
-            &[above_atom],
+            &[above_atom, skip_taskbar_atom, skip_pager_atom],
         )
         .map_err(|e| BackendError::Failed(e.to_string()))?;
 
