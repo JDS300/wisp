@@ -42,12 +42,19 @@ By asking the compositor, not by touching the game.
 Wisp is a sibling window that the compositor is asked to put on top. It reads
 the log file EverQuest already writes, and nothing else.
 
+**The HUD never takes input** — not focusable, not clickable, not draggable, on
+any backend. EverQuest confines the pointer during right-click mouse-look, and
+the usual fixes for that on Linux (winecfg fullscreen capture, or gamescope's
+`--force-grab-cursor`) hold the pointer outright. Anything wanting clicks loses
+to a pointer grab; something that never wants them cannot. Configuration lives
+in the CLI and a config file instead.
+
 ## Status
 
 | Spec | Subject | State |
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | The spine — discovery, ingest, IPC, overlay on screen | Not started |
+| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Approved, not started |
 | 2 | Parser and encounter model | Not started |
 | 3 | HUD surfaces and interaction | Not started |
 | 4 | Packaging and distribution | Not started |
