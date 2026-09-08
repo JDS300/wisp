@@ -3,6 +3,7 @@ mod rules;
 mod server;
 mod tail;
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
@@ -11,12 +12,15 @@ use wisp_proto::{Snapshot, PROTOCOL_VERSION};
 const TICK: Duration = Duration::from_millis(250);
 
 fn main() -> std::io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let stub = args.iter().any(|a| a == "--stub");
-    let from_start = args.iter().any(|a| a == "--from-start");
+    // args_os, not args: a log path is arbitrary bytes on Linux and must not
+    // panic on non-UTF-8. No String round-trip -- PathBuf is built directly
+    // from the OsString.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let stub = args.iter().any(|a| a == OsStr::new("--stub"));
+    let from_start = args.iter().any(|a| a == OsStr::new("--from-start"));
     let log: Option<PathBuf> = args
         .iter()
-        .position(|a| a == "--log")
+        .position(|a| a == OsStr::new("--log"))
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
 

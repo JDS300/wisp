@@ -7,16 +7,24 @@ mod text;
 use backend::{BackendKind, OverlayBackend};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
+    use std::ffi::OsStr;
+
+    // args_os, not args: OsStr-clean throughout, no String round-trip. Only
+    // --backend and --scale need to become &str at all (one is matched
+    // against fixed literals, the other is parsed as a float); a non-UTF-8
+    // value for either is refused with a clear error rather than panicking.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let forced = args
         .iter()
-        .position(|a| a == "--backend")
+        .position(|a| a == OsStr::new("--backend"))
         .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str());
+        .map(|s| s.to_str().ok_or("--backend value is not valid UTF-8"))
+        .transpose()?;
     let scale: f32 = args
         .iter()
-        .position(|a| a == "--scale")
+        .position(|a| a == OsStr::new("--scale"))
         .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.to_str())
         .and_then(|s| s.parse().ok())
         .unwrap_or(48.0);
 
