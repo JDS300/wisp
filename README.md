@@ -37,6 +37,10 @@ By asking the compositor, not by touching the game.
 - **On desktop Wayland (KDE, Sway, Hyprland, river):** a `wlr-layer-shell`
   surface on the overlay layer.
 - **On GNOME:** no layer-shell exists, so an ordinary always-on-top window.
+  This cannot reliably composite above a fullscreen game -- an ordinary
+  window has no way to force itself above exclusive fullscreen content, only
+  above other ordinary windows. GNOME users should run the game windowed or
+  borderless.
 
 **No injection, no `LD_PRELOAD`, no Vulkan layer, no reading game memory.**
 Wisp is a sibling window that the compositor is asked to put on top. It reads

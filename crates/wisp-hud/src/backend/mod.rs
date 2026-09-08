@@ -5,6 +5,8 @@ use std::fmt;
 
 pub mod gamescope_x11;
 pub mod layer_shell;
+pub mod plain_window;
+mod x11_common;
 
 /// One frame of premultiplied-alpha RGBA, top-left origin.
 pub struct Frame {

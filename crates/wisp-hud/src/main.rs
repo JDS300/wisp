@@ -37,7 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(backend::gamescope_x11::GamescopeX11Backend::new(400, 80))
         }
         BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(400, 80)),
-        other => return Err(format!("{other:?} is not implemented yet").into()),
+        BackendKind::PlainWindow => {
+            Box::new(backend::plain_window::PlainWindowBackend::new(400, 80))
+        }
     };
     surface.attach()?;
 
