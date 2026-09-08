@@ -114,19 +114,25 @@ commit messages, or documentation, except where this charter discusses them.
 ## 4. Severance record
 
 The five symbols `debuff_timer.py` imports from upstream's `mez_timer.py`, and
-what replaces each. Three of the five disappear outright on a Project Quarm
-target, because Quarm is classic-through-Velious with no ranked spells.
+what replaces each.
+
+> **Corrected 2026-09-08, same day.** An earlier revision deleted two of these
+> on the reasoning that Wisp targeted Project Quarm, which has no ranked
+> spells. **Wisp targets EverQuest Legends**, a different client and codebase.
+> EQL does rank spells, so both symbols return as rewrites. See the log entry
+> in `PROVENANCE.md`.
 
 | Symbol | Upstream value | Replacement in Wisp |
 |---|---|---|
 | `DEFAULT_WARNING_SECONDS` | `10.0` | Wisp's own UI threshold constant. An arbitrary presentation choice, not a derived value. |
 | `DEFAULT_CRITICAL_SECONDS` | `5.0` | As above. |
 | `SERVER_TICK_SECONDS` | `6` | EverQuest's server tick. A fact about the game; restated, not copied. |
-| `scaled_duration_ticks(base, rank)` | `(base*(10+rank)+5)//10` | EQL's documented 10%-per-rank scaling. **Deleted.** On Quarm `rank` is always 0, so it is the identity function. Reintroduce from the published rule only if Wisp ever targets Live. |
-| `split_spell_rank(name)` | parses `Rk. II` suffixes | **Deleted.** Quarm has no ranked spells; the code path never fires. |
+| `scaled_duration_ticks(base, rank)` | `(base*(10+rank)+5)//10` | **Rewritten.** EQL scales duration 10% per rank. The rule is published and arithmetic; Wisp implements it from the rule, not from this expression. |
+| `split_spell_rank(name)` | parses `Rk. II` suffixes | **Rewritten, and differently.** `Rk. II` is an EverQuest *Live* convention that does not occur in EQL: 1.44M lines of EQL log contain zero instances. EQL ranks with a bare trailing roman numeral — `Dazzle V`, `Pacify V`, `Swift Like the Wind III`. Wisp parses that, derived from the log rather than from upstream. Names ending in numeral letters are the false-positive trap. |
 
 Net: two constants Wisp chooses for itself, one integer that is a property of
-the game, and two deletions. This is a severance, not a rewrite.
+the game, and two small functions rewritten from published rules and from the
+log — one of which upstream appears to implement for the wrong client.
 
 ---
 

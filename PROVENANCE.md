@@ -85,16 +85,17 @@ hand-written code, which under MIT is close to immaterial.
 ## Severance record
 
 The five symbols `debuff_timer.py` imports from upstream's `mez_timer.py`.
-Three disappear outright on a Project Quarm target — Quarm is classic through
-Velious with no ranked spells.
+
+**Corrected 2026-09-08** — see the log. An earlier revision deleted two of these
+believing Wisp targeted Project Quarm. It targets EverQuest Legends.
 
 | Symbol | Upstream | Replacement | Done |
 |---|---|---|---|
 | `DEFAULT_WARNING_SECONDS` | `10.0` | Wisp's own UI threshold. A presentation choice, not a derived value. | no |
 | `DEFAULT_CRITICAL_SECONDS` | `5.0` | As above. | no |
 | `SERVER_TICK_SECONDS` | `6` | EverQuest's server tick. A fact about the game; restated, not copied. | no |
-| `scaled_duration_ticks(base, rank)` | `(base*(10+rank)+5)//10` | **Deleted.** EQL's 10%-per-rank scaling; on Quarm `rank` is always 0, making it the identity function. | no |
-| `split_spell_rank(name)` | parses `Rk. II` | **Deleted.** Quarm has no ranked spells; the path never fires. | no |
+| `scaled_duration_ticks(base, rank)` | `(base*(10+rank)+5)//10` | **Rewritten** from the published 10%-per-rank rule. | no |
+| `split_spell_rank(name)` | parses `Rk. II` | **Rewritten, differently.** EQL ranks with a bare trailing roman numeral (`Dazzle V`), not `Rk. II` — a Live convention absent from 1.44M lines of EQL log. Derived from the log. | no |
 
 ---
 
@@ -105,9 +106,13 @@ Velious with no ranked spells.
 - **EverQuest's own log output.** The primary source. Preferred over any
   second-hand description of behaviour.
 - **The EQL wiki** — published spell data.
-- **JDS300's own captured game logs** — the only source that reflects Project
-  Quarm rather than Live. Upstream's Allakhazam-derived durations were wrong
-  for Quarm in several measured cases.
+- **JDS300's own captured EverQuest Legends logs** — the authoritative source
+  for what EQL actually prints, as distinct from EverQuest Live, which most
+  published spell data describes. Reference fixture:
+  `eqlog_Daggo_freeport.txt`, 117 MB / 1,440,036 lines.
+  **Project Quarm logs are not used.** Quarm is a different client on a
+  different codebase; its output does not generalise to EQL, and conflating the
+  two is exactly how the rank format was recorded wrongly on day one.
 - **gamescope, MangoHud and mangoapp source** — BSD-2-Clause and MIT. `mangoapp`
   is the reference implementation for the overlay mechanism. Terms recorded in
   `THIRD_PARTY.md` when anything is vendored.
@@ -177,6 +182,41 @@ or whenever a file moves.
 - Inspected `spinips` file sizes, import lines and `git log` authorship to
   build the tier tables above. Metadata and import statements only; no logic
   read or carried.
+
+### 2026-09-08 — target client corrected to EverQuest Legends
+
+The first revision of this file and of Spec 0 assumed Wisp targeted **Project
+Quarm**, and deleted two severance symbols on the reasoning that Quarm has no
+ranked spells. **That was wrong. Wisp targets EverQuest Legends** — a different
+client on a different codebase. Corrected by JDS300 the same day.
+
+Established from the reference fixture (`eqlog_Daggo_freeport.txt`, EQL,
+1,440,036 lines), a primary source:
+
+- The session boundary line on EQL is `Welcome to EverQuest Legends!`
+- Timestamps are `[Sat Nov 25 10:28:35 2023]`, naive local wall clock, no zone
+- **EQL ranks spells with a bare trailing roman numeral** — observed:
+  `You begin casting Dazzle V`, `Pacify V`, `Swift Like the Wind III`
+- **`Rk. II` never appears.** Zero occurrences in 1.44M lines. It is an
+  EverQuest *Live* convention, and upstream's `split_spell_rank` parses it.
+
+Consequence: both deleted symbols return as rewrites, and one of them is
+rewritten to a *different specification* than upstream's, derived from the log
+rather than from upstream's code. Recorded in the severance table above.
+
+**Standing rule from this: never generalise between EQ clients.** Quarm, Live
+and Legends print differently. A behaviour is only established for the client
+whose log demonstrates it.
+
+### 2026-09-08 — test hardware
+
+Primary handheld target is a **Lenovo Legion Go S running SteamOS**, which is
+the same `gamescope-session` and AMD graphics stack as a Steam Deck. gamescope
+3.16.25 ships a display profile for it (`lenovo.legiongos.lcd.lua`) alongside
+`valve.steamdeck.lcd.lua`, so it is a first-class target rather than a proxy.
+
+This closes the spike's open item as testable: the gamescope overlay backend can
+be verified with real pixels on real hardware, not inferred.
 - **EQBuddy assessed and declined as a dependency.** Established that it is MIT
   licensed, that `EQBuddy.Core` is UI-free `net10.0`, that a `linux-x64` build
   ships in v1.99.18, and that JDS300 has 62 merged commits in it. Inspected
