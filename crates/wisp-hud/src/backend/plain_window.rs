@@ -7,7 +7,7 @@
 //! fullscreen game; that limitation is inherent to the approach and is stated
 //! in the README rather than hidden.
 
-use crate::backend::x11_common::X11Surface;
+use crate::backend::x11_common::{intern_atom, X11Surface};
 use crate::backend::{BackendError, Frame, OverlayBackend};
 use x11rb::connection::Connection;
 use x11rb::properties::WmHints;
@@ -39,18 +39,8 @@ impl OverlayBackend for PlainWindowBackend {
 
         // Optional but helpful: tell the window manager what kind of window
         // this is, so it does not e.g. give it a taskbar entry.
-        let window_type_atom = conn
-            .intern_atom(false, b"_NET_WM_WINDOW_TYPE")
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .reply()
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .atom;
-        let utility_atom = conn
-            .intern_atom(false, b"_NET_WM_WINDOW_TYPE_UTILITY")
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .reply()
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .atom;
+        let window_type_atom = intern_atom(conn, "_NET_WM_WINDOW_TYPE")?;
+        let utility_atom = intern_atom(conn, "_NET_WM_WINDOW_TYPE_UTILITY")?;
         conn.change_property32(
             PropMode::REPLACE,
             surface.window,
@@ -73,18 +63,8 @@ impl OverlayBackend for PlainWindowBackend {
 
         // Belt and braces: set _NET_WM_STATE to ABOVE before mapping, since
         // most window managers honour this property at map time.
-        let net_wm_state_atom = conn
-            .intern_atom(false, b"_NET_WM_STATE")
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .reply()
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .atom;
-        let above_atom = conn
-            .intern_atom(false, b"_NET_WM_STATE_ABOVE")
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .reply()
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .atom;
+        let net_wm_state_atom = intern_atom(conn, "_NET_WM_STATE")?;
+        let above_atom = intern_atom(conn, "_NET_WM_STATE_ABOVE")?;
         conn.change_property32(
             PropMode::REPLACE,
             surface.window,

@@ -183,13 +183,7 @@ impl X11Surface {
     /// Interns `name` and sets it on the window as a single-value CARDINAL
     /// property -- the shape every `GAMESCOPE_*` atom takes.
     pub fn set_cardinal_property(&self, name: &str, value: u32) -> Result<(), BackendError> {
-        let atom = self
-            .conn
-            .intern_atom(false, name.as_bytes())
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .reply()
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .atom;
+        let atom = intern_atom(&self.conn, name)?;
         self.conn
             .change_property32(PropMode::REPLACE, self.window, atom, AtomEnum::CARDINAL, &[value])
             .map_err(|e| BackendError::Failed(e.to_string()))?;
@@ -229,6 +223,17 @@ impl X11Surface {
         );
         let _ = self.conn.flush();
     }
+}
+
+/// Interns an atom by name and returns its id. Shared by every X11 backend
+/// that needs to look up a `GAMESCOPE_*` or EWMH atom, so the four-line
+/// intern-then-reply dance lives in one place.
+pub(crate) fn intern_atom(conn: &RustConnection, name: &str) -> Result<Atom, BackendError> {
+    conn.intern_atom(false, name.as_bytes())
+        .map_err(|e| BackendError::Failed(e.to_string()))?
+        .reply()
+        .map_err(|e| BackendError::Failed(e.to_string()))
+        .map(|reply| reply.atom)
 }
 
 /// Converts a `Frame` (premultiplied RGBA, top-left origin) into the wire
@@ -304,16 +309,40 @@ mod tests {
 
     #[test]
     fn frame_to_wire_clips_to_the_window_size() {
-        let width = 4;
-        let height = 3;
-        let frame = Frame {
-            width,
-            height,
-            rgba: vec![9u8; (width * height * 4) as usize],
-        };
+        // A frame wider and taller than the window, 4x3, clipped to a 2x2
+        // window. Every pixel gets a distinct, coordinate-derived colour (R =
+        // x, G = y, B = 0xAB, A = 0xFF) so a bug that reads with the clipped
+        // width as the row stride -- rather than the frame's own width -- is
+        // caught: it would pull the wrong bytes for every row after the
+        // first, not just produce the right byte count.
+        let width = 4u32;
+        let height = 3u32;
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let o = ((y * width + x) * 4) as usize;
+                rgba[o] = x as u8;
+                rgba[o + 1] = y as u8;
+                rgba[o + 2] = 0xAB;
+                rgba[o + 3] = 0xFF;
+            }
+        }
+        let frame = Frame { width, height, rgba };
 
         let (wire, draw_w, draw_h) = frame_to_wire(&frame, 2, 2, PixelFormat::Argb32, true);
         assert_eq!((draw_w, draw_h), (2, 2));
         assert_eq!(wire.len(), (draw_w * draw_h * 4) as usize);
+
+        // ARGB32, MSB-first: bytes go A, R, G, B per pixel.
+        let pixel = |x: u8, y: u8| [0xFF, x, y, 0xAB];
+
+        // First pixel of row 0: source (0, 0).
+        assert_eq!(&wire[0..4], &pixel(0, 0));
+        // Last kept pixel of row 0: source (1, 0) -- not (3, 0), which is
+        // what an unclipped-width stride would wrongly read.
+        assert_eq!(&wire[4..8], &pixel(1, 0));
+        // First pixel of the last kept row: source (0, 1) -- not (0, 2) or
+        // some offset derived from the frame's full width.
+        assert_eq!(&wire[8..12], &pixel(0, 1));
     }
 }
