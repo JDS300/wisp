@@ -127,6 +127,30 @@ Velious with no ranked spells.
   Reading their source would recreate the problem this project exists to
   escape, against a second party.
 
+### Disclosed: EQBuddy
+
+[EQBuddy](https://github.com/DranakCorps-bot/EQBuddy) is a third-party
+EverQuest Legends session tracker by David Edwards, **MIT licensed**, with a
+cross-platform `EQBuddy.Core` and a Linux build shipping today. JDS300 has
+**62 merged commits** in it (August 2026), several on debuff durations and
+spell ranks — the same problem domain as Wisp.
+
+This is disclosed rather than omitted, because the author's familiarity with it
+is real and undisclosed familiarity is what makes a provenance record worthless.
+
+**Wisp deliberately does not draw from EQBuddy**, and is written independently
+of it.
+
+Note that this is a *choice, not an obligation*. Unlike `itsspin/spinips`,
+EQBuddy is permissively licensed: its code — including JDS300's own
+contributions, which are MIT-licensed to that project — could lawfully be
+reused here with attribution. Wisp declines to, having chosen independence.
+
+**If that ever changes**, it is legitimate and easy: add a `NOTICE` entry
+crediting EQBuddy and David Edwards under MIT, record the decision in the log
+below, and mark the affected files. There is no barrier, only a decision that
+has not been taken.
+
 ---
 
 ## Log
@@ -153,3 +177,9 @@ or whenever a file moves.
 - Inspected `spinips` file sizes, import lines and `git log` authorship to
   build the tier tables above. Metadata and import statements only; no logic
   read or carried.
+- **EQBuddy assessed and declined as a dependency.** Established that it is MIT
+  licensed, that `EQBuddy.Core` is UI-free `net10.0`, that a `linux-x64` build
+  ships in v1.99.18, and that JDS300 has 62 merged commits in it. Inspected
+  project metadata, `README.md`, `LICENSE`, `NOTICE` and `.csproj` files;
+  no implementation source read. Building Wisp on `EQBuddy.Core` was considered
+  and explicitly rejected in favour of independence. See the disclosure above.
