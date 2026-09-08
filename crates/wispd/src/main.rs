@@ -43,8 +43,17 @@ fn main() -> std::io::Result<()> {
 
     loop {
         if let Some(t) = tailer.as_mut() {
-            for line in t.poll()? {
-                counters.apply(&line);
+            // A poll error is reported and the loop continues rather than
+            // exiting the daemon: spec §6 requires surviving log truncation
+            // and file replacement without restarting, and an unhandled `?`
+            // here would lose every counter on a transient I/O hiccup.
+            match t.poll() {
+                Ok(lines) => {
+                    for line in lines {
+                        counters.apply(&line);
+                    }
+                }
+                Err(e) => eprintln!("wispd: tail read error: {e}"),
             }
         } else {
             // stub feed

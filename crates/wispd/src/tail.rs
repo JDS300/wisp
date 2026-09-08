@@ -50,7 +50,16 @@ impl Tailer {
             Ok(meta) => {
                 let ident = (meta.dev(), meta.ino());
                 if Some(ident) != self.ident || meta.len() < self.offset {
-                    self.reopen(true)?;
+                    // The file may be replaced again between this metadata
+                    // call and `reopen`'s own `File::open` -- log rotation
+                    // is exactly this race. A failure here is transient, not
+                    // a reason to propagate and kill the daemon: `reopen`
+                    // hasn't touched `self.file`/`self.ident` yet on this
+                    // path, so they are left as they were and the next tick
+                    // tries again.
+                    if self.reopen(true).is_err() {
+                        return Ok(Vec::new());
+                    }
                 }
             }
             Err(_) => return Ok(Vec::new()), // gone for now; try again next tick
@@ -150,6 +159,29 @@ mod tests {
 
         std::fs::write(&path, b"fresh\n").unwrap();
         assert_eq!(t.poll().unwrap(), vec!["fresh"]);
+    }
+
+    #[test]
+    fn a_transient_reopen_failure_during_rotation_does_not_error_the_poll() {
+        // The file vanishing between wispd's poll ticks -- e.g. logrotate's
+        // rename-then-recreate -- must not propagate an Err out of poll():
+        // that would kill the daemon and lose every counter (spec §6:
+        // "survives log truncation and file replacement without
+        // restarting").
+        let path = temp_log("rotate");
+        append(&path, "one\n");
+        let mut t = Tailer::open(&path, true).unwrap();
+        assert_eq!(t.poll().unwrap(), vec!["one"]);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            t.poll().unwrap(),
+            Vec::<String>::new(),
+            "a missing file must poll empty, not Err"
+        );
+
+        append(&path, "two\n");
+        assert_eq!(t.poll().unwrap(), vec!["two"], "recreated file is picked up on the next tick");
     }
 
     #[test]
