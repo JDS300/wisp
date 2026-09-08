@@ -3,3 +3,6 @@ name = "wisp-hud"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+wisp-proto = { path = "../wisp-proto" }
