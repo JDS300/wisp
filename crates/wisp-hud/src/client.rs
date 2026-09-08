@@ -23,17 +23,19 @@ pub fn socket_path() -> PathBuf {
 
 pub struct SnapshotStream {
     reader: BufReader<UnixStream>,
+    had_error: bool,
 }
 
 pub fn connect(path: &Path) -> io::Result<SnapshotStream> {
     Ok(SnapshotStream {
         reader: BufReader::new(UnixStream::connect(path)?),
+        had_error: false,
     })
 }
 
 impl SnapshotStream {
     /// `None` means the daemon closed the connection, or a read error
-    /// occurred (logged to stderr before returning).
+    /// occurred (logged to stderr before returning; see `had_error`).
     pub fn next_snapshot(&mut self) -> Option<Result<Snapshot, ProtoError>> {
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
@@ -41,9 +43,18 @@ impl SnapshotStream {
             Ok(_) => Some(decode(&line)),
             Err(e) => {
                 eprintln!("wisp-hud: read error: {e}");
+                self.had_error = true;
                 None
             }
         }
+    }
+
+    /// True once `next_snapshot` has returned `None` because of a read
+    /// error, rather than a clean EOF. Lets the caller tell "the daemon
+    /// closed the connection" apart from "reading from it failed", instead
+    /// of printing the former unconditionally after every `None`.
+    pub fn had_error(&self) -> bool {
+        self.had_error
     }
 }
 

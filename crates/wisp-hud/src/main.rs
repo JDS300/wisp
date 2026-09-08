@@ -91,7 +91,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // next_snapshot already logged a read error, if that's why the loop
-    // ended; a `None` on a clean EOF is otherwise just the daemon going away.
-    eprintln!("wisp-hud: daemon closed the connection");
+    // ended; only print "closed the connection" for the other case, a clean
+    // EOF, so a read failure is not followed by a second, misleading line.
+    if !stream.had_error() {
+        eprintln!("wisp-hud: daemon closed the connection");
+    }
     Ok(())
 }

@@ -26,9 +26,16 @@ fn body(line: &str) -> &str {
 /// Deliberately narrow: `X has been slain by Y!` is a *third-party* kill and
 /// must not match. It accounts for 3,065 of the 6,787 "slain" lines, so a
 /// looser rule would be wrong by 45%.
+///
+/// The spec rule is `You have slain (.+)!` -- at least one character between
+/// the prefix and the trailing `!`, so a mob-less "You have slain !" (were
+/// one ever to appear) does not count as a kill.
 pub fn own_kill(line: &str) -> bool {
     let b = body(line);
-    b.starts_with("You have slain ") && b.ends_with('!')
+    match b.strip_prefix("You have slain ") {
+        Some(rest) => rest.len() > 1 && rest.ends_with('!'),
+        None => false,
+    }
 }
 
 /// Start of a new play session. 39 in the reference fixture.
@@ -91,6 +98,15 @@ mod tests {
     fn ordinary_lines_are_not_kills() {
         assert!(!own_kill(CHATTER));
         assert!(!own_kill(BOUNDARY));
+    }
+
+    #[test]
+    fn a_mob_less_slain_line_does_not_match() {
+        // The spec rule is `You have slain (.+)!` -- at least one character
+        // between the prefix and the trailing `!`. Zero such lines exist in
+        // the 1,440,036-line reference fixture, so this does not change the
+        // verified kill count; it closes a gap the fixture never exercised.
+        assert!(!own_kill("[Mon Aug 10 20:39:54 2026] You have slain !"));
     }
 
     #[test]

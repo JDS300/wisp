@@ -58,7 +58,7 @@ fn main() -> std::io::Result<()> {
         } else {
             // stub feed
             counters.lines_ingested += 17;
-            if seq % 5 == 0 {
+            if seq.is_multiple_of(5) {
                 counters.session_kills += 1;
             }
             counters.last_ts = "Mon Aug 10 20:39:54 2026".to_string();

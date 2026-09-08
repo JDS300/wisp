@@ -71,7 +71,7 @@ impl Renderer {
                         continue;
                     }
                     let x = pen_x as i32 + metrics.xmin + gx as i32;
-                    let y = baseline as i32 - metrics.height as i32 - metrics.ymin + gy as i32;
+                    let y = baseline - metrics.height as i32 - metrics.ymin + gy as i32;
                     if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
                         continue;
                     }

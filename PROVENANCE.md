@@ -272,3 +272,77 @@ HUD running and not running —**pending JDS300**. The spec's risk table
 (`docs/specs/2026-09-08-spec-1-the-spine.md`) is left unchanged:
 `GAMESCOPE_NO_FOCUS` stays recorded as unproven until that human check
 happens.
+
+### 2026-09-08 — layer-shell overlay backend: stand-in verification
+
+Task 9 (Milestone 2) implemented the `zwlr_layer_shell_v1` overlay backend
+(`crates/wisp-hud/src/backend/layer_shell.rs`), for desktop Wayland sessions
+without gamescope: KDE, Sway, Hyprland, river.
+
+What was actually verified, against the development machine's real KDE
+Plasma / KWin session (`WAYLAND_DISPLAY=wayland-0`, `zwlr_layer_shell_v1`
+version 5), with `wispd --stub` standing in for a real log feed (launching
+EverQuest or Lutris, and synthesising input via `xdotool`/`XTEST`, are
+off-limits on this machine):
+
+- With no daemon running, `wisp-hud --backend layer-shell` attached
+  successfully — past the compositor's first `configure`, since `attach()`
+  blocks on that — and only the subsequent connect to the (absent) wispd
+  socket failed. No panics, no Wayland protocol errors on stderr.
+- With `wispd --stub` running, `wisp-hud --backend layer-shell` ran for a
+  full 10-second `timeout` window with no further stderr output: `attach()`
+  succeeded, the daemon connection succeeded, and `present()` ran repeatedly
+  (once per stub snapshot) without incident.
+- A reviewer finding during Task 9 itself — `present()` never actually read
+  the Wayland socket, so `wl_buffer.release` events went unread and the
+  `SlotPool` grew without bound — was fixed by replacing `flush()` +
+  `dispatch_pending()` with `event_queue.roundtrip(state)`. Proved bounded
+  with a temporary frame counter: `pool.len()` held flat at 256000 bytes
+  (two 400x80 Argb8888 buffers) across a 55-second, ~220-frame run, instead
+  of doubling roughly every frame as it did before the fix.
+- All processes were killed afterward and the socket file removed.
+
+**Not verified, and not attempted:** the actual on-screen appearance over a
+fullscreen game, and click-through/no-focus behaviour during real play. Both
+require a human playing EverQuest through the **no-gamescope** Lutris
+configuration under a real desktop compositor — **pending JDS300**.
+
+### 2026-09-08 — plain-window fallback backend: readback verification, and a decoration defect found and fixed
+
+Task 10 (Milestone 2) implemented the plain-window fallback backend
+(`crates/wisp-hud/src/backend/plain_window.rs`), for sessions with neither
+gamescope nor layer-shell (notably GNOME), sharing the X11 plumbing with the
+gamescope backend via the new `x11_common.rs`.
+
+What was verified at the time, by `xprop`/`xwininfo` readback against a real
+KDE Plasma / KWin XWayland session (`DISPLAY=:0`) with `wispd --stub`:
+`_NET_WM_STATE` carried `_NET_WM_STATE_ABOVE`; `WM_HINTS` showed "Client
+accepts input or input focus: False"; `_NET_WM_WINDOW_TYPE` was
+`_NET_WM_WINDOW_TYPE_UTILITY` as set; `Override Redirect State: no` confirmed
+the window was WM-managed, unlike the gamescope backend. Click-through itself
+was recorded as pending JDS300, since it requires a human click.
+
+**What that verification missed, found by the whole-branch final review:**
+the same readback also showed `_NET_FRAME_EXTENTS(CARDINAL) = 0, 0, 28, 0`
+and `_NET_WM_ALLOWED_ACTIONS` including `_NET_WM_ACTION_MOVE`, `_RESIZE` and
+`_CLOSE` — KWin was decorating the `_NET_WM_WINDOW_TYPE_UTILITY` window with
+a titlebar and frame, and that frame took pointer input the empty XFixes
+input region on the client window could never reach. A direct violation of
+the spec's "not focusable, not clickable, not draggable, not resizable by
+pointer" invariant, missed at Task 10 time because nobody had read
+`_NET_FRAME_EXTENTS` or `_NET_WM_ALLOWED_ACTIONS` specifically — only
+`_NET_WM_STATE` and `WM_HINTS` were checked.
+
+**Fixed in the final-review wave (F1):** switched to
+`_NET_WM_WINDOW_TYPE_DOCK` (undecorated and kept-above by EWMH definition),
+added `_MOTIF_WM_HINTS` (`decorations = 0`) belt-and-braces for window
+managers that decorate DOCK anyway, and added `_NET_WM_STATE_SKIP_TASKBAR`
+and `_NET_WM_STATE_SKIP_PAGER` alongside `_NET_WM_STATE_ABOVE`. Re-verified
+live on the same `DISPLAY=:0` KWin session with `wispd --stub`:
+`_NET_FRAME_EXTENTS` is now absent, `_NET_WM_ALLOWED_ACTIONS` contains only
+`_NET_WM_ACTION_CHANGE_DESKTOP` (no `MOVE`/`RESIZE`/`CLOSE`), and
+`_NET_WM_WINDOW_TYPE` is `_NET_WM_WINDOW_TYPE_DOCK`. Absolute and relative
+window coordinates matched (no reparenting frame offset).
+
+**Still not verified, and not attempted:** actual click-through against a
+real pointer grab — requires a human, as before — **pending JDS300**.
