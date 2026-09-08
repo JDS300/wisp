@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 mod server;
+#[allow(dead_code)] // wired into the pipeline in Task 8
+mod tail;
 
 use std::thread::sleep;
 use std::time::Duration;
