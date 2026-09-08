@@ -54,7 +54,7 @@ in the CLI and a config file instead.
 | Spec | Subject | State |
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Approved, not started |
+| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Approved · [implementation plan ready](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | Parser and encounter model | Not started |
 | 3 | HUD surfaces and interaction | Not started |
 | 4 | Packaging and distribution | Not started |
