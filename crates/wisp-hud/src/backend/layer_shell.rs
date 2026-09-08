@@ -184,6 +184,9 @@ pub struct LayerShellBackend {
     state: Option<AppState>,
     pool: Option<SlotPool>,
     layer: Option<LayerSurface>,
+    /// Set the first time `present` sees a frame bigger than the window, so
+    /// the clip warning is printed once rather than every frame at 5 Hz.
+    warned_clipped: bool,
 }
 
 impl LayerShellBackend {
@@ -196,6 +199,7 @@ impl LayerShellBackend {
             state: None,
             pool: None,
             layer: None,
+            warned_clipped: false,
         }
     }
 }
@@ -283,6 +287,13 @@ impl OverlayBackend for LayerShellBackend {
     fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
         if frame.width == 0 || frame.height == 0 {
             return Ok(());
+        }
+        if !self.warned_clipped && (frame.width > self.width || frame.height > self.height) {
+            eprintln!(
+                "wisp-hud: frame {}x{} exceeds the window {}x{}; clipping",
+                frame.width, frame.height, self.width, self.height
+            );
+            self.warned_clipped = true;
         }
         let (Some(event_queue), Some(state), Some(pool), Some(layer)) = (
             self.event_queue.as_mut(),

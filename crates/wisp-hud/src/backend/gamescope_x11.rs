@@ -71,7 +71,7 @@ impl OverlayBackend for GamescopeX11Backend {
     }
 
     fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
-        match &self.surface {
+        match &mut self.surface {
             Some(surface) => surface.present(frame),
             None => Ok(()),
         }

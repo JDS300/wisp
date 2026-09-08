@@ -20,13 +20,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.to_str().ok_or("--backend value is not valid UTF-8"))
         .transpose()?;
-    let scale: f32 = args
+    // 48.0 is the default only when --scale is absent. A present-but-bad
+    // value (non-UTF-8, or not a float) is refused with a clear error and
+    // exit 2, not silently swapped for the default.
+    let scale: f32 = match args
         .iter()
         .position(|a| a == OsStr::new("--scale"))
         .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.to_str())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(48.0);
+    {
+        Some(os) => {
+            let s = os.to_str().ok_or("--scale value is not valid UTF-8")?;
+            match s.parse::<f32>() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("wisp-hud: invalid --scale value: {s:?}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        None => 48.0,
+    };
 
     let kind = match forced {
         Some("gamescope") => BackendKind::GamescopeX11,
@@ -40,18 +53,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     eprintln!("wisp-hud: backend {kind:?}, scale {scale}px");
 
+    let renderer = text::Renderer::new(scale);
+
+    // Size the window from the renderer instead of a hardcoded guess: render
+    // a worst-case probe string once and pad it, so the window is exactly as
+    // big as the HUD can ever need to be at this scale and no bigger.
+    const PAD: u32 = 8;
+    let probe = renderer.render("999999 kills");
+    let (w, h) = (probe.width + 2 * PAD, probe.height + 2 * PAD);
+
     let mut surface: Box<dyn OverlayBackend> = match kind {
         BackendKind::GamescopeX11 => {
-            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(400, 80))
+            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(w, h))
         }
-        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(400, 80)),
-        BackendKind::PlainWindow => {
-            Box::new(backend::plain_window::PlainWindowBackend::new(400, 80))
-        }
+        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(w, h)),
+        BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(w, h)),
     };
     surface.attach()?;
 
-    let renderer = text::Renderer::new(scale);
     let path = client::socket_path();
     let mut stream = client::connect(&path)?;
     eprintln!("wisp-hud: connected to {}", path.display());

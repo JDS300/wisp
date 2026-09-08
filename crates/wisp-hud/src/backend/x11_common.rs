@@ -55,6 +55,9 @@ pub struct X11Surface {
     format: PixelFormat,
     /// The server's byte order for image data, read once at connect time.
     msb_first: bool,
+    /// Set the first time `present` sees a frame bigger than the window, so
+    /// the clip warning is printed once rather than every frame at 5 Hz.
+    warned_clipped: bool,
 }
 
 impl X11Surface {
@@ -180,6 +183,7 @@ impl X11Surface {
             height,
             format,
             msb_first,
+            warned_clipped: false,
         })
     }
 
@@ -203,7 +207,14 @@ impl X11Surface {
         Ok(())
     }
 
-    pub fn present(&self, frame: &Frame) -> Result<(), BackendError> {
+    pub fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
+        if !self.warned_clipped && (frame.width > self.width || frame.height > self.height) {
+            eprintln!(
+                "wisp-hud: frame {}x{} exceeds the window {}x{}; clipping",
+                frame.width, frame.height, self.width, self.height
+            );
+            self.warned_clipped = true;
+        }
         let (wire, draw_w, draw_h) = frame_to_wire(frame, self.width, self.height, self.format, self.msb_first);
         if draw_w == 0 || draw_h == 0 {
             return Ok(());
