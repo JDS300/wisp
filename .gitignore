@@ -1,0 +1,19 @@
+# build output
+/build/
+/dist/
+/target/
+*.o
+*.so
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+
+# editor / os
+.direnv/
+.DS_Store
+*.swp
+
+# local scratch, never committed
+/scratch/
