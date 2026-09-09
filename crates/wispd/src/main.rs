@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 mod combat;
 mod durations;
-#[allow(dead_code)] // wired into the pipeline in Task 4
 mod encounter;
 mod rules;
 mod server;
@@ -13,7 +12,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use wisp_proto::{Confidence, Snapshot, Timer, TimerKind, PROTOCOL_VERSION};
+use wisp_proto::{Confidence, Encounter, MeterRow, Personal, Snapshot, Timer, TimerKind, PROTOCOL_VERSION};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -83,6 +82,20 @@ fn main() -> std::io::Result<()> {
         }
     };
 
+    // The encounter tracker needs only the player's name, read from the
+    // log's filename; without one, "you" is still recognised by pronoun and
+    // only a `Daggo`-style self-reference would be missed.
+    let mut fights = match &log {
+        Some(p) => {
+            let name = encounter::player_name_from_log(p).unwrap_or_default();
+            if name.is_empty() {
+                eprintln!("wispd: could not read the player's name from the log filename; self-heals by name will not count as yours");
+            }
+            Some(encounter::Tracker::new(&name))
+        }
+        None => None,
+    };
+
     let mut seq = 0u64;
     let mut last_line_arrival = Instant::now();
 
@@ -100,6 +113,9 @@ fn main() -> std::io::Result<()> {
                         counters.apply(&line);
                         if let Some(tr) = tracker.as_mut() {
                             tr.observe(&line);
+                        }
+                        if let Some(fx) = fights.as_mut() {
+                            fx.observe(&line);
                         }
                     }
                 }
@@ -132,6 +148,12 @@ fn main() -> std::io::Result<()> {
             None => Vec::new(),
         };
 
+        let encounter_now: Option<Encounter> = match fights.as_ref().and_then(|fx| fx.last_time().map(|t| (fx, t))) {
+            Some((fx, last)) => fx.encounter(last as f64 + last_line_arrival.elapsed().as_secs_f64()),
+            None if stub => Some(stub_encounter(seq)),
+            None => None,
+        };
+
         seq += 1;
         let snapshot = Snapshot {
             v: PROTOCOL_VERSION,
@@ -140,7 +162,7 @@ fn main() -> std::io::Result<()> {
             lines_ingested: counters.lines_ingested,
             session_kills: counters.session_kills,
             timers: timers_now,
-            encounter: None,
+            encounter: encounter_now,
         };
         srv.accept_pending(&snapshot);
         srv.broadcast(&snapshot);
@@ -172,4 +194,29 @@ fn stub_timers(seq: u64) -> Vec<Timer> {
             confidence: Confidence::Estimated,
         },
     ]
+}
+
+/// A synthetic fight that runs for 45 s and lingers, so the HUD panel can be
+/// built and eyeballed without a log.
+fn stub_encounter(seq: u64) -> Encounter {
+    let t = (seq * 250 / 1000) % 90; // 0..90 s cycle: 45 s fight, 45 s linger-ish
+    let active = t < 45;
+    let d = t.clamp(1, 45);
+    let you = 400 * d;
+    let ser = 290 * d;
+    let mis = 75 * d;
+    Encounter {
+        active,
+        duration_s: d,
+        you: Personal { damage: you, dps: 400, taken: 50 * d, taken_ps: 50, healing: 20 * d, hps: 20, overheal: 4 * d },
+        damage: vec![
+            MeterRow { name: "you".to_string(), amount: you, per_s: 400, is_you: true },
+            MeterRow { name: "Serenitee".to_string(), amount: ser, per_s: 290, is_you: false },
+            MeterRow { name: "Misery".to_string(), amount: mis, per_s: 75, is_you: false },
+        ],
+        healing: vec![
+            MeterRow { name: "Misery".to_string(), amount: 74 * d, per_s: 74, is_you: false },
+            MeterRow { name: "you".to_string(), amount: 20 * d, per_s: 20, is_you: true },
+        ],
+    }
 }

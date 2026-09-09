@@ -189,20 +189,24 @@ impl Tracker {
     }
 
     /// Keeps a summary of every finished fight; for tests and replays.
+    #[cfg(test)]
     pub fn with_history(player: &str) -> Self {
         let mut t = Tracker::new(player);
         t.history = Some(Vec::new());
         t
     }
 
+    #[cfg(test)]
     pub fn stats(&self) -> &EncounterStats {
         &self.stats
     }
 
+    #[cfg(test)]
     pub fn history(&self) -> &[FightSummary] {
         self.history.as_deref().unwrap_or(&[])
     }
 
+    #[cfg(test)]
     pub fn pet_count(&self) -> usize {
         self.pets.len()
     }
