@@ -505,3 +505,47 @@ wrong against its own primary sources:
 No new sources were consulted; both corrections came from re-measuring the
 same primary sources (the frozen fixture and the local client files) already
 on record above.
+
+### 2026-09-08 — Spec 2 timers: verified live over EverQuest Legends by JDS300 (Milestone 4)
+
+JDS300 played EverQuest Legends on the desktop test rig (gamescope, with
+`--force-grab-cursor`, as in Spec 1 — see `docs/plans/2026-09-08-spec-1-the-spine.md`,
+"Global Constraints — The test rig"), running `wispd --log <live log>` and
+`wisp-hud` from the `spec-2-timers` branch.
+
+In his words: "tested and the timer for mez shows up, changes color at 10, 3
+and cleared." Asked when the row turned to the critical colour, he answered:
+"About 5 s, as coded."
+
+What was observed: a mez cast in play produced a row on the landing line; the
+row turned to the warning colour at 10 s remaining and the critical colour at
+about 5 s remaining, matching the thresholds coded in §4; the row cleared at
+expiry. The HUD took no input throughout — he played normally.
+
+**What this proves:** Spec 2 Milestone 4 as written ("a mez in play: row
+appears on landing, reaches zero within 1 s of the wear-off line, disappears")
+is closed on the desktop rig. The colour precedence in §4 — critical at ≤ 5 s,
+else warning at ≤ 10 s — runs correctly against a live, real-time countdown,
+not just the fixture replay. The full live path (log file → `wispd` → socket →
+`wisp-hud`) works end-to-end for a mez timer over the real game, and the §3
+invariant continues to hold while it does.
+
+**Not verified — not specifically exercised, not failed:**
+
+- A broken mez removed on the awaken line.
+- Kill clearing a mob's rows, and zone-change clearing the list.
+- Restarting `wisp-hud` mid-fight showing the same remaining time.
+- The dimmed `estimated`-confidence shade, as distinct from a `measured` row's
+  white — this run did not distinguish the two.
+- The handheld (Steam Deck / Legion Go S) target.
+
+**A limit recorded, JDS300's own observation:** "spell rank goes up to X (10)
+at this time and I assume it will go higher but that can be a future problem
+when it does." The `ROMAN` table in `crates/wispd/src/rules.rs` (`split_rank`)
+maps only `I` through `X`. A cast line naming a rank above `X` (`XI` and
+beyond) does not match any entry in that table, `split_rank` returns `None`,
+the cast never becomes a pending cast, and no timer appears for that spell —
+silently, with no error logged. Accepted for now, since the client's current
+maximum rank is X; recorded in the spec's risk table
+(`docs/specs/2026-09-08-spec-2-timers.md`, §7) against the day the client
+raises it.

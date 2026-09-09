@@ -299,7 +299,7 @@ renderer changes.
 | 1 | `spells` loader | Row count and three known rows against the real client files; hand-written fixture rows in tests |
 | 2 | `rules` + `timers` + `durations` | Fixture replay under `--from-start` reproduces the counts in §6 exactly; unit tests for every transition |
 | 3 | Protocol v2 + HUD rows | `wispd --stub` emits synthetic timers; rows draw and count down on the desktop |
-| 4 | Live | A mez in play: row appears on landing, reaches zero within 1 s of the wear-off line, disappears; a broken mez disappears on the awaken line |
+| 4 | Live | A mez in play: row appears on landing, reaches zero within 1 s of the wear-off line, disappears; a broken mez disappears on the awaken line (verified 2026-09-08, mez row/thresholds) |
 
 Milestone 4 is the one that matters, and Milestone 2's replay is what makes it
 likely to pass first time.
@@ -368,6 +368,7 @@ Learned durations at end of replay (median of the last nine samples):
 | **`spells_us.txt` is 38 MB.** Parsing it at every daemon start costs time. | Parse only five fields per row; measure in Milestone 1. If it exceeds one second in release, cache the eligible subset under `$XDG_CACHE_HOME/wisp/` keyed by the file's size and mtime. Not a spec decision until measured. |
 | **The client updates and the format shifts.** The field layout was reverse-engineered by a third party. | The loader fails loudly on a header or field-count mismatch rather than reading garbage, and names the file. |
 | **Multi-class levels.** The log's `Welcome to level N!` cannot say which class levelled. | Not used. The seed is the cap; learning does the rest. This is why level is a non-goal. |
+| **Spell ranks above X.** The log prints bare roman numerals and the client currently upgrades to X; the parser's numeral table stops at X. | Accepted. A rank-XI cast would be silently ignored (no pending cast, no row). When EverQuest Legends ships a rank above X, extend the table in `rules.rs` and add the numeral to the rank test; nothing else changes. |
 
 ---
 

@@ -24,9 +24,13 @@ are disabled with a message rather than the daemon refusing to run. Learned
 spell durations persist across sessions at
 `$XDG_DATA_HOME/wisp/durations.json`. The automated evidence is the spell
 loader's counts against the real client files and a deterministic replay of
-a 1.44-million-line fixture log; **live verification that a mez timer
-actually counts down to zero in step with the in-game wear-off is claimed
-but unverified** — see the Status table and `PROVENANCE.md`.
+a 1.44-million-line fixture log; **JDS300 has verified live that a mez timer
+appears on landing and counts down against the coded colour thresholds
+(warning at 10 s, critical at 5 s), clearing at expiry** — see the Status
+table and `PROVENANCE.md` for exactly what was and was not exercised. Mez
+breaking on the awaken line, kill and zone clearing, restarting the HUD
+mid-fight, and the dimmed `estimated`-confidence shade are **not yet
+exercised**.
 
 The split is not stylistic. On gamescope — what a Steam Deck runs — an overlay
 must be a client inside the game's own XWayland instance, on a different
@@ -66,7 +70,7 @@ in the CLI and a config file instead.
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
 | 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
-| 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — live verification (Milestone 4) pending · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
+| 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — verified live over EverQuest on the desktop (mez timer: row on landing, warning at 10 s, critical at 5 s, cleared at expiry) · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
 | 3 | Encounter model | Not started |
 | 4 | Packaging and distribution | Not started |
 
