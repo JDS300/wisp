@@ -59,25 +59,27 @@ No heal in the fixture prints a potential smaller than its actual. Mob articles 
 
 ### The reference replay and its numbers
 
-Appendix A is the reference implementation of spec §4. Run on the frozen fixture on 2026-09-08; deterministic (two runs, identical). Task 3's replay test must reproduce these **exactly**:
+Appendix A is the reference implementation of spec §4. Run on the frozen fixture on 2026-09-08; deterministic (two runs, identical). **Re-derived on 2026-09-09** after the whole-branch final review found three line shapes the reference had missed (other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>`; a damage shield can land on you; a special attack can carry an `on` preposition before `YOU`) — the table below is the corrected, current one; Task 3's replay test must reproduce these **exactly**:
 
 | Counter | Expected |
 |---|---|
-| encounters | 2544 |
-| dmg_out melee / spell / dot / shield | 15199089 / 9082968 / 4433865 / 447208 |
-| own_self_dmg / own_pet_dmg | 18085260 / 5204134 |
-| taken melee / spell / dot | 1917807 / 709376 / 273054 |
-| heal_actual / heal_over | 2356833 / 837342 |
-| own_heal_actual / own_heal_over / own_hot_actual | 1875591 / 590911 / 355478 |
-| heal_outside_fight | 266814 |
+| encounters | 2524 |
+| dmg_out melee / spell / dot / shield | 15198942 / 9082968 / 4622907 / 447208 |
+| own_self_dmg / own_pet_dmg | 18085260 / 5284285 |
+| taken melee / spell / dot / shield | 1924867 / 709376 / 273054 / 257300 |
+| heal_actual / heal_over | 2364526 / 838539 |
+| own_heal_actual / own_heal_over / own_hot_actual | 1875603 / 590911 / 355478 |
+| heal_outside_fight | 259121 |
 | pet_announcements / distinct pet names | 4890 / 91 |
 | boundaries | 971 |
-| durations min / median / max / sum | 1 / 35 / 683 / 146220 |
-| largest fight by own damage: own / duration / DPS / taken | 211477 / 482 / 439 / 21020 |
-| damage sources summed over all fights, top 4 (amount desc, name asc) | you 23289394, Yder 1447129, Serenitee 1321322, Misery 989452 |
-| healers summed over all fights, top 3 | you 1875591, Serenitee 196052, Misery 116859 |
+| durations min / median / max / sum | 1 / 36 / 738 / 146813 |
+| largest fight by own damage: own / duration / DPS / taken | 212467 / 482 / 441 / 21416 |
+| damage sources summed over all fights, top 4 (amount desc, name asc) | you 23369545, Yder 1447129, Serenitee 1321322, Misery 1000700 |
+| healers summed over all fights, top 3 | you 1875603, Serenitee 196052, Misery 116859 |
 
 If your implementation disagrees, the reference is the arbiter of the spec's rules **unless you can show the reference violates the spec text**; then stop and report both lines.
+
+**Notes for the Rust:** Rust's `f64::round()` rounds half away from zero; Python's `round()` rounds half to even (banker's rounding). The two disagree only exactly at `x.5`, and none of the asserted numbers above land on that boundary — every `rate()` and DPS value in this table and in the replay test agrees between the two languages.
 
 ### Tooling notes
 
@@ -777,34 +779,35 @@ mod tests {
         assert_eq!(
             *t.stats(),
             EncounterStats {
-                encounters: 2544,
-                dmg_out_melee: 15199089,
+                encounters: 2524,
+                dmg_out_melee: 15198942,
                 dmg_out_spell: 9082968,
-                dmg_out_dot: 4433865,
+                dmg_out_dot: 4622907,
                 dmg_out_shield: 447208,
                 own_self_dmg: 18085260,
-                own_pet_dmg: 5204134,
-                taken_melee: 1917807,
+                own_pet_dmg: 5284285,
+                taken_melee: 1924867,
                 taken_spell: 709376,
                 taken_dot: 273054,
-                heal_actual: 2356833,
-                heal_over: 837342,
-                own_heal_actual: 1875591,
+                taken_shield: 257300,
+                heal_actual: 2364526,
+                heal_over: 838539,
+                own_heal_actual: 1875603,
                 own_heal_over: 590911,
                 own_hot_actual: 355478,
-                heal_outside_fight: 266814,
+                heal_outside_fight: 259121,
                 pet_announcements: 4890,
                 boundaries: 971,
             }
         );
         assert_eq!(t.pet_count(), 91);
         let h = t.history();
-        assert_eq!(h.len(), 2544);
+        assert_eq!(h.len(), 2524);
         let mut durs: Vec<u64> = h.iter().map(|f| f.duration_s).collect();
         durs.sort_unstable();
-        assert_eq!((durs[0], durs[durs.len() / 2], *durs.last().unwrap(), durs.iter().sum::<u64>()), (1, 35, 683, 146220));
+        assert_eq!((durs[0], durs[durs.len() / 2], *durs.last().unwrap(), durs.iter().sum::<u64>()), (1, 36, 738, 146813));
         let big = h.iter().max_by_key(|f| f.own_damage).unwrap();
-        assert_eq!((big.own_damage, big.duration_s, (big.own_damage as f64 / big.duration_s as f64).round() as u64, big.taken), (211477, 482, 439, 21020));
+        assert_eq!((big.own_damage, big.duration_s, (big.own_damage as f64 / big.duration_s as f64).round() as u64, big.taken), (212467, 482, 441, 21416));
         let mut dmg: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         let mut heal: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for f in h {
@@ -818,10 +821,10 @@ mod tests {
             v
         };
         assert_eq!(top(&dmg, 4), vec![
-            ("you".to_string(), 23289394), ("Yder".to_string(), 1447129),
-            ("Serenitee".to_string(), 1321322), ("Misery".to_string(), 989452)]);
+            ("you".to_string(), 23369545), ("Yder".to_string(), 1447129),
+            ("Serenitee".to_string(), 1321322), ("Misery".to_string(), 1000700)]);
         assert_eq!(top(&heal, 3), vec![
-            ("you".to_string(), 1875591), ("Serenitee".to_string(), 196052), ("Misery".to_string(), 116859)]);
+            ("you".to_string(), 1875603), ("Serenitee".to_string(), 196052), ("Misery".to_string(), 116859)]);
     }
 }
 ```
@@ -1582,7 +1585,7 @@ Record the outcome in `PROVENANCE.md` (dated) and the README's Spec 3 row, exact
 
 **Known gaps, stated:**
 
-1. `CombatEvent::Taken` with `DamageKind::Shield` cannot occur (no "You are … by X's" line in the fixture); the match arm is empty on purpose.
+1. ~~`CombatEvent::Taken` with `DamageKind::Shield` cannot occur (no "You are … by X's" line in the fixture); the match arm is empty on purpose.~~ **Corrected in the final-review wave:** the line does exist — `YOU are <verb> by <source>'s <thing> for N points of non-melee damage!` (note `YOU are`, and the line ends in `!`, which is why the earlier grep for "You are" with a lower-case "You" and a trailing "." found nothing) — 19,077 times in the fixture. It is now classified and counted in a new `taken_shield` stat; the match arm is no longer empty.
 2. Task 4's `stub_encounter` is decorative; its numbers are not asserted anywhere.
 3. The reference marks targets as mobs inconsistently across line kinds (melee: when the source is not a mob; spells: when the source is a plain single word or an owned pet; DoT and shield: never). The tracker reproduces that exactly because the acceptance numbers depend on it; a cleaner rule is Spec 4's to make, with a new reference.
 
@@ -1592,11 +1595,15 @@ Record the outcome in `PROVENANCE.md` (dated) and the README's Spec 3 row, exact
 
 ## Appendix A — the reference replay
 
-Run on 2026-09-08 against the frozen fixture; deterministic across runs. Throwaway Python; the arbiter of the spec's rules for Task 3; recorded here, not shipped.
+Run on 2026-09-08 against the frozen fixture; deterministic across runs. **Re-derived on 2026-09-09**, after the whole-branch final review found three line shapes this script had missed: other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>` (the old `oth_dot` pattern matched only when a spell name itself happened to carry an apostrophe — a bard song title — and credited the text before it as a phantom source); a damage shield can land on you (`YOU are <verb> by <source>'s <thing> for N points of non-melee damage!`); and a special attack can carry an `on` preposition before `YOU` (`<mob> <verb>s on YOU for N points of damage.`). Throwaway Python; the arbiter of the spec's rules for Task 3; recorded here, not shipped.
 
 ```python
 #!/usr/bin/env python3
-"""Reference implementation of Spec 3 (encounters, damage, healing) over the frozen fixture."""
+"""Reference implementation of Spec 3 (encounters, damage, healing) over the frozen fixture.
+
+Independent of the Rust code. Every rule here is the spec's rule; the numbers it
+prints are the acceptance numbers. Throwaway; recorded in the plan, never shipped.
+"""
 import re, datetime, collections
 
 FIXTURE = "/mnt/Data4TB/Games/everquest/fixtures/eqlog_Daggo_freeport.1440036.txt"
@@ -1606,19 +1613,23 @@ PET_TTL_SECS = 120          # a name is "your pet" for this long after each Mast
 ARTICLES = ("a ", "an ", "the ")
 
 ts_re = re.compile(r"^\[(.*?)\] (.*)$")
+# damage out / taken
 own_melee = re.compile(r"^You (\w+) (.+?) for (\d+) points of damage\.")
 own_nuke = re.compile(r"^You hit (.+?) for (\d+) points of ([a-z]+) damage by (.+?)\.")
 own_dot = re.compile(r"^(.+?) has taken (\d+) damage from your (.+?)\.")
 own_ds = re.compile(r"^(.+?) is (\w+) by YOUR (.+?) for (\d+) points of non-melee damage\.")
 oth_melee = re.compile(r"^(.+?) (\w+?)s (.+?) for (\d+) points of damage\.")
 oth_nuke = re.compile(r"^(.+?) hit (.+?) for (\d+) points of ([a-z]+) damage by (.+?)\.")
-oth_dot = re.compile(r"^(.+?) has taken (\d+) damage from (.+?)'s (.+?)\.")
+oth_dot = re.compile(r"^(.+?) has taken (\d+) damage from (.+?) by (.+?)\.")
 oth_ds = re.compile(r"^(.+?) is (\w+) by (.+?)'s (.+?) for (\d+) points of non-melee damage\.")
-taken_melee = re.compile(r"^(.+?) (\w+?)s YOU for (\d+) points of damage\.")
+taken_melee = re.compile(r"^(.+?) (\w+?)s(?: on)? YOU for (\d+) points of damage\.")
 taken_nuke = re.compile(r"^(.+?) hit you for (\d+) points of ([a-z]+) damage by (.+?)\.")
 taken_dot = re.compile(r"^You have taken (\d+) damage from (.+?) by (.+?)\.")
+taken_ds = re.compile(r"^YOU are (\w+) by (.+?)'s (.+?) for (\d+) points of non-melee damage!")
+# heals
 own_heal = re.compile(r"^You healed (.+?)( over time)? for (\d+)(?: \((\d+)\))? hit points by (.+?)\.")
 oth_heal = re.compile(r"^(.+?) healed (.+?)( over time)? for (\d+)(?: \((\d+)\))? hit points(?: by (.+?))?\.")
+# boundaries / pets
 pet_announce = re.compile(r"^(.+?) (?:tells|told) you, 'Attacking .* Master\.'")
 zone = re.compile(r"^(You have entered |LOADING, PLEASE WAIT|Welcome to EverQuest Legends!)")
 
@@ -1629,12 +1640,18 @@ def is_mobish(name):
     return name.lower().startswith(ARTICLES)
 
 def owner_of(name):
+    # "Jennie`s warder" / "Jennie`s pet" -> Jennie
     m = re.match(r"^(.+?)`s (warder|pet)$", name)
     return m.group(1) if m else None
 
 class Ref:
     def __init__(self):
-        self.pets = {}; self.mobs = set(); self.c = collections.Counter(); self.enc = None; self.finished = []
+        self.pets = {}              # lower-cased pet name -> last announcement time
+        self.mobs = set()           # lower-cased names ever targeted by self/pet or that hit YOU
+        self.c = collections.Counter()
+        self.enc = None
+        self.finished = []
+    # ---- actor resolution
     def source(self, name, now):
         if name in ("You", "YOUR", "you", "your") or name == PLAYER:
             return "you", "self"
@@ -1646,12 +1663,13 @@ class Ref:
         if is_mobish(name) or name.lower() in self.mobs or " " in name:
             return name, "mob"
         return name, "player"
+    # ---- encounter
     def touch(self, now, kind):
         if self.enc is None:
             if kind == "heal":
                 return None
-            self.enc = {"start": now, "last": now, "dmg": collections.Counter(), "taken": 0,
-                        "heal": collections.Counter(), "over": collections.Counter()}
+            self.enc = {"start": now, "last": now, "dmg": collections.Counter(), "taken": 0, "taken_by": collections.Counter(),
+                        "heal": collections.Counter(), "over": collections.Counter(), "n": 0}
             self.c["encounters"] += 1
         self.enc["last"] = now
         return self.enc
@@ -1661,6 +1679,7 @@ class Ref:
     def close(self):
         if self.enc:
             e = self.enc; e["dur"] = max(1, e["last"] - e["start"]); self.finished.append(e); self.enc = None
+    # ---- events
     def damage_out(self, src, amount, now, kind):
         who, role = self.source(src, now)
         if role == "mob":
@@ -1673,7 +1692,7 @@ class Ref:
     def damage_taken(self, src, amount, now, kind):
         self.mobs.add(src.lower())
         e = self.touch(now, "damage")
-        e["taken"] += amount
+        e["taken"] += amount; e["taken_by"][src] += amount
         self.c["taken_" + kind] += amount
     def heal(self, src, tgt, actual, potential, now, hot):
         who, role = self.source(src, now)
@@ -1688,6 +1707,7 @@ class Ref:
         if who == "you":
             self.c["own_heal_actual"] += actual; self.c["own_heal_over"] += (potential - actual)
             if hot: self.c["own_hot_actual"] += actual
+
     def line(self, now, body):
         self.expire(now)
         m = pet_announce.match(body)
@@ -1695,24 +1715,31 @@ class Ref:
             self.pets[m.group(1).lower()] = now; self.c["pet_announcements"] += 1; return
         if zone.match(body):
             self.close(); self.c["zone_or_session"] += 1; return
+        # damage taken (target YOU) first: these mention YOU explicitly
         m = taken_melee.match(body)
         if m: self.damage_taken(m.group(1), int(m.group(3)), now, "melee"); return
         m = taken_nuke.match(body)
         if m: self.damage_taken(m.group(1), int(m.group(2)), now, "spell"); return
         m = taken_dot.match(body)
         if m: self.damage_taken(m.group(3), int(m.group(1)), now, "dot"); return
+        m = taken_ds.match(body)
+        if m: self.damage_taken(m.group(2), int(m.group(4)), now, "shield"); return
+        # own damage out
         m = own_nuke.match(body)
         if m: self.mobs.add(m.group(1).lower()); self.damage_out("You", int(m.group(2)), now, "spell"); return
         m = own_melee.match(body)
-        if m: self.mobs.add(m.group(2).lower()); self.damage_out("You", int(m.group(3)), now, "melee"); return
+        if m:
+            self.mobs.add(m.group(2).lower()); self.damage_out("You", int(m.group(3)), now, "melee"); return
         m = own_dot.match(body)
         if m: self.mobs.add(m.group(1).lower()); self.damage_out("You", int(m.group(2)), now, "dot"); return
         m = own_ds.match(body)
         if m: self.mobs.add(m.group(1).lower()); self.damage_out("You", int(m.group(4)), now, "ds"); return
+        # heals
         m = own_heal.match(body)
         if m: self.heal("You", m.group(1), int(m.group(3)), int(m.group(4) or m.group(3)), now, bool(m.group(2))); return
         m = oth_heal.match(body)
         if m: self.heal(m.group(1), m.group(2), int(m.group(4)), int(m.group(5) or m.group(4)), now, bool(m.group(3))); return
+        # others' damage out (target must not be YOU; handled above)
         m = oth_nuke.match(body)
         if m:
             src, tgt = m.group(1), m.group(2)
@@ -1720,7 +1747,7 @@ class Ref:
                 self.mobs.add(tgt.lower())
             self.damage_out(src, int(m.group(3)), now, "spell"); return
         m = oth_dot.match(body)
-        if m: self.damage_out(m.group(3), int(m.group(2)), now, "dot"); return
+        if m: self.damage_out(m.group(4), int(m.group(2)), now, "dot"); return
         m = oth_ds.match(body)
         if m: self.damage_out(m.group(3), int(m.group(5)), now, "ds"); return
         m = oth_melee.match(body)
@@ -1740,51 +1767,64 @@ def main():
             r.line(logtime(m.group(1)), m.group(2))
     r.close()
     c = r.c
-    print("encounters", c["encounters"])
+    print("encounters", c["encounters"], "finished", len(r.finished))
     for k in sorted(c): print(f"  {k} = {c[k]}")
+    own_total = sum(e["dmg"]["you"] for e in r.finished)
+    print("own damage in fights (all kinds, incl. pet) =", own_total)
     big = max(r.finished, key=lambda e: e["dmg"]["you"])
-    print("largest own-damage fight:", big["dmg"]["you"], big["dur"], round(big["dmg"]["you"]/big["dur"]), big["taken"])
-    allsrc = collections.Counter(); allheal = collections.Counter()
-    for e in r.finished: allsrc.update(e["dmg"]); allheal.update(e["heal"])
-    print("top damage:", sorted(allsrc.items(), key=lambda kv: (-kv[1], kv[0]))[:4])
-    print("top healers:", sorted(allheal.items(), key=lambda kv: (-kv[1], kv[0]))[:3])
-    print("pets", len(r.pets))
-    durs = sorted(e["dur"] for e in r.finished)
-    print("durations", durs[0], durs[len(durs)//2], durs[-1], sum(durs))
+    print("largest own-damage fight: own", big["dmg"]["you"], "dur", big["dur"], "dps", round(big["dmg"]["you"]/big["dur"]),
+          "taken", big["taken"], "top sources", big["dmg"].most_common(3), "top healers", big["heal"].most_common(2))
+    longest = max(r.finished, key=lambda e: e["dur"])
+    print("longest fight: dur", longest["dur"], "sources", len(longest["dmg"]))
+    allsrc = collections.Counter()
+    for e in r.finished: allsrc.update(e["dmg"])
+    print("top damage sources overall:", allsrc.most_common(6))
+    allheal = collections.Counter()
+    for e in r.finished: allheal.update(e["heal"])
+    print("top healers overall:", allheal.most_common(4))
+    print("own pet names seen (lower-cased):", sorted(r.pets)[:8], "count", len(r.pets))
+    top3 = sorted(allsrc.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+    print("top damage sources (amount desc, name asc):", top3)
+    durs = [e["dur"] for e in r.finished]
+    print("fight duration: min", min(durs), "median", sorted(durs)[len(durs)//2], "max", max(durs), "sum", sum(durs))
 
 main()
 ```
 
-Its output on 2026-09-08:
+Its output on 2026-09-09 (run in a thread with a raised recursion limit and a larger C stack; the plain interpreter call raises Python's `RuntimeError: internal error in regular expression engine` on this fixture's default stack depth — a Python/regex quirk, not a rule of the spec):
 
 ```
-encounters 2544
-  dmg_out_dot = 4433865
+encounters 2524 finished 2524
+  dmg_out_dot = 4622907
   dmg_out_ds = 447208
-  dmg_out_melee = 15199089
+  dmg_out_melee = 15198942
   dmg_out_spell = 9082968
-  encounters = 2544
-  heal_actual = 2356833
-  heal_outside_fight = 266814
-  heal_over = 837342
-  own_heal_actual = 1875591
+  encounters = 2524
+  heal_actual = 2364526
+  heal_outside_fight = 259121
+  heal_over = 838539
+  own_heal_actual = 1875603
   own_heal_over = 590911
   own_hot_actual = 355478
-  own_pet_dmg = 5204134
+  own_pet_dmg = 5284285
   own_self_dmg = 18085260
   pet_announcements = 4890
   taken_dot = 273054
-  taken_melee = 1917807
+  taken_melee = 1924867
+  taken_shield = 257300
   taken_spell = 709376
   zone_or_session = 971
-largest own-damage fight: 211477 482 439 21020
-top damage: [('you', 23289394), ('Yder', 1447129), ('Serenitee', 1321322), ('Misery', 989452)]
-top healers: [('you', 1875591), ('Serenitee', 196052), ('Misery', 116859)]
-pets 91
-durations 1 35 683 146220
+own damage in fights (all kinds, incl. pet) = 23369545
+largest own-damage fight: own 212467 dur 482 dps 441 taken 21416 top sources [('you', 212467)] top healers [('you', 14023)]
+longest fight: dur 738 sources 1
+top damage sources overall: [('you', 23369545), ('Yder', 1447129), ('Serenitee', 1321322), ('Misery', 1000700), ('Jennie', 420686), ('Ludaxe', 378122)]
+top healers overall: [('you', 1875603), ('Serenitee', 196052), ('Misery', 116859), ('Jennie', 41346)]
+own pet names seen (lower-cased): ['a barbed bone skeleton', 'a carrion ghoul', 'a cauldron hammerhead', 'a cauldron shark', 'a dry bone skeleton', 'a fetid fiend', 'a fire giant warrior', 'a flouting gargoyle'] count 91
+top damage sources (amount desc, name asc): [('you', 23369545), ('Yder', 1447129), ('Serenitee', 1321322), ('Misery', 1000700)]
+fight duration: min 1 median 36 max 738 sum 146813
 ```
 
-Notes for the Rust: Python's `\w` in the melee verb is any word character; the fixture's verbs are ASCII letters. `(.+?) for (\d+)` is a leftmost split; the Rust uses the rightmost ` for ` before the amount, which agrees on every fixture line (no name contains ` for `). The heal target is captured but never used by either.
+Notes for the Rust: Python's `\w` in the melee verb is any word character; the fixture's verbs are ASCII letters. `(.+?) for (\d+)` is a leftmost split; the Rust uses the rightmost ` for ` before the amount, which agrees on every fixture line (no name contains ` for `). The heal target is captured but never used by either. The other-DoT split now takes the *last* ` by ` in the remainder after `damage from`, matching the Rust's `rsplit_once(" by ")`; both agree because no spell name in the fixture contains its own ` by `. Rust's `f64::round()` rounds half away from zero; Python's `round()` rounds half to even — the two disagree only exactly at `x.5`, and none of the numbers above land on that boundary, so every rate and DPS value here agrees between the two languages.
 
 ---
 

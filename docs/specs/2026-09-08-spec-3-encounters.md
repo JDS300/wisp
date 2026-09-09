@@ -78,15 +78,21 @@ full stop and are ignored.
 | your damage shield | `<target> is <verb> by YOUR <thing> for <N> points of non-melee damage.` |
 | other melee | `<source> <verb>s <target> for <N> points of damage.` |
 | other spell | `<source> hit <target> for <N> points of <type> damage by <Spell>.` |
-| other DoT tick | `<target> has taken <N> damage from <source>'s <Spell>.` |
+| other DoT tick | `<target> has taken <N> damage from <Spell> by <source>.` |
 | other damage shield | `<target> is <verb> by <source>'s <thing> for <N> points of non-melee damage.` |
+| damage shield on you | `YOU are <verb> by <source>'s <thing> for <N> points of non-melee damage!` |
 | melee on you | `<source> <verb>s YOU for <N> points of damage.` |
+| special attack on you | `<source> <verb>s on YOU for <N> points of damage.` |
 | spell on you | `<source> hit you for <N> points of <type> damage by <Spell>.` |
 | DoT on you | `You have taken <N> damage from <Spell> by <source>.` |
 | your heal | `You healed <target>[ over time] for <N>[ (<M>)] hit points by <Spell>.` |
 | other heal | `<source> healed <target>[ over time] for <N>[ (<M>)] hit points[ by <Spell>].` |
 | pet announcement | `<pet> tells you, 'Attacking <target> Master.'` (also `told you`) |
 | boundary | `You have entered …`, `LOADING, PLEASE WAIT…`, `Welcome to EverQuest Legends!` |
+
+A sentence of the form `<target> has taken <N> damage by <Spell>.` — note
+"damage **by**", with no "from" and no source at all — carries no source and
+is ignored by decision: nothing to attribute it to, so it is not an event.
 
 A heal's `<N>` is the amount actually healed and `<M>`, when printed, the
 amount the spell could have healed; overheal is `M − N`, zero when `M` is
@@ -175,7 +181,7 @@ DPS  434  in  52/s  HPS  21   0:42
 a jeering gargoyle   Mesmerization VI   12
 you            18.2k  434/s
 Serenitee      12.0k  286/s
-Misery          3.1k   74/s  +
+Misery          3100   74/s  +
 ```
 
 Amounts print as integers below 10,000, as `12.3k` below 1,000,000, else as
@@ -187,8 +193,9 @@ while it lingers. Columns are fixed width in the monospace face. The window
 is sized at attach for the kill line, the personal line, 8 timer rows, 5
 damage rows and 3 healing rows.
 
-When `encounter` is `null` the personal line reads `DPS    -  in    -  HPS    -`
-and no group rows are drawn, so the layout does not jump.
+When `encounter` is `null` the personal line reads
+`DPS     -  in    -/s  HPS    -   -:--` and no group rows are drawn, so the
+layout does not jump.
 
 ---
 
@@ -210,23 +217,24 @@ Exact, not impressionistic.
 **Replay**, against the frozen fixture
 (`/mnt/Data4TB/Games/everquest/fixtures/eqlog_Daggo_freeport.1440036.txt`,
 SHA-256 begins `70a95ca40bc701cf`) with the rules of §4, as produced by the
-reference implementation recorded in the plan before any Rust was written
-(deterministic; two runs identical):
+reference implementation recorded in the plan before any Rust was written,
+**re-derived on 2026-09-09 after the whole-branch final review found three
+line shapes it had missed** (deterministic; two runs identical each time):
 
 | Counter | Expected |
 |---|---|
-| encounters | `2544` |
-| damage dealt in fights by non-mob sources: melee / spell / DoT / damage shield | `15199089` / `9082968` / `4433865` / `447208` |
-| your damage in fights: by you / by your pets / total | `18085260` / `5204134` / `23289394` |
-| damage taken by you in fights: melee / spell / DoT | `1917807` / `709376` / `273054` |
-| healing in fights by non-mob sources: actual / overheal | `2356833` / `837342` |
-| your healing in fights: actual / overheal / of which HoT ticks | `1875591` / `590911` / `355478` |
-| healing outside any fight (not counted) | `266814` |
+| encounters | `2524` |
+| damage dealt in fights by non-mob sources: melee / spell / DoT / damage shield | `15198942` / `9082968` / `4622907` / `447208` |
+| your damage in fights: by you / by your pets / total | `18085260` / `5284285` / `23369545` |
+| damage taken by you in fights: melee / spell / DoT / damage shield | `1924867` / `709376` / `273054` / `257300` |
+| healing in fights by non-mob sources: actual / overheal | `2364526` / `838539` |
+| your healing in fights: actual / overheal / of which HoT ticks | `1875603` / `590911` / `355478` |
+| healing outside any fight (not counted) | `259121` |
 | pet announcements seen / distinct pet names | `4890` / `91` |
 | boundary lines that closed or found no fight | `971` |
-| fight duration: min / median / max / sum (s) | `1` / `35` / `683` / `146220` |
-| largest fight by your damage: damage / duration / DPS / taken | `211477` / `482` / `439` / `21020` |
-| top damage sources overall (amount desc, name asc) | `you 23289394`, `Yder 1447129`, `Serenitee 1321322`, `Misery 989452` |
+| fight duration: min / median / max / sum (s) | `1` / `36` / `738` / `146813` |
+| largest fight by your damage: damage / duration / DPS / taken | `212467` / `482` / `441` / `21416` |
+| top damage sources overall (amount desc, name asc) | `you 23369545`, `Yder 1447129`, `Serenitee 1321322`, `Misery 1000700` |
 | top healers overall after you | `Serenitee 196052`, `Misery 116859` |
 
 **Live.**
@@ -249,6 +257,8 @@ reference implementation recorded in the plan before any Rust was written
 | **Other players' summoned pets have no owner in the log.** | Accepted and stated in §2. They are rows under their own names. |
 | **A charmed pet's damage after the charm breaks** is still yours for up to 120 s. | Accepted; bounded by the TTL. The `has been charmed` and `Charm spell has worn off` lines could tighten it later. |
 | **The 10 s idle timeout splits a slow fight** (a caster kiting) and merges back-to-back pulls. | Accepted; it is what meters in this genre do. The value is one constant. |
+| **A single-word named NPC's `on`-preposition special attack** (`<mob> <verb>s on <target> for N points of damage.`) is credited as a player's damage-out row until the mob has fought you directly — the `on` shape is exactly as exposed to the first risk above as ordinary melee is; it does not close that gap. Accepted; verified in the fixture, not merely theoretical: `Doreme frenzies on a haunted chest for 8 points of damage.` (Tue Aug 18 21:19:46) is credited to a "Doreme" row until `You strike Doreme` first marks it a mob, almost an hour later in log time. |
+| **The reference was re-derived after the whole-branch final review** found three line shapes it had missed (other sources' DoT ticks print `from <Spell> by <source>`, not the assumed `from <source>'s <Spell>`; a damage shield can land on you; a special attack can carry an `on` preposition before `YOU`). The §6 numbers moved: damage taken by you (melee+spell+dot+shield) rose from 2,900,237 to 3,164,597 (+9.1%, the new `taken_shield` category alone); other-sourced DoT damage counted in fights rose from 141,014 to 330,056 as four phantom players (Tuyen, Selo, Denon, Oathbreaker) — credited by a possessive split that matched apostrophes inside bard song names — were replaced by their real sources. | Standing. The numbers above are the acceptance criteria from 2026-09-09 forward; the plan's Appendix A carries the corrected script and its output. |
 | **The panel is tall**: 18 lines at the default scale is about 1,100 px. | Accepted for Spec 3; `--scale 32` fits comfortably. Layout is Spec 4's problem. |
 | **Overheal is only known when the game prints two numbers.** Lines without `(M)` are taken as zero overheal. | Accepted; the number printed is the number counted (§3). |
 
@@ -270,12 +280,15 @@ strings; the fixture is CRLF, so no pattern is anchored at end of line.
 | damage types seen | magic 14,012 · cold 1,668 · prismatic 1,347 · poison 1,076 · fire 626 · disease 329 · unresistable 33 |
 | `X has taken N damage from your S.` (own DoT) | 21,660 |
 | `X is <verb> by YOUR <thing> for N points of non-melee damage.` (own damage shield) | 31,549 (tormented 28,079 · pierced 2,652 · burned 812) |
-| suffixes on own damage lines | (Critical) 11,506 · (Riposte) 818 · (Finishing Blow) 545 · (Slay Undead) 367 · (Riposte Critical) 99 · (Crippling Blow) 47 |
+| suffixes on own damage lines | (Critical) 11,506 · (Riposte) 818 · (Finishing Blow) 545 · (Slay Undead) 367 · (Riposte Critical) 99 · (Crippling Blow) 47, among others (fourteen forms in the fixture) |
 | `<Name> <verb>s X for N points of damage.` (other melee) | 142,648 |
 | `<Name> hit X for N points of <type> damage by S.` (other spell) | 34,725 |
-| `X has taken N damage from <Name>'s S.` (other DoT) | 1,720 |
+| `X has taken N damage from <Spell> by <Name>.` (other DoT; corrected in the final-review wave — the possessive shape `from <Name>'s <Spell>.` matched only 1,720 lines, an apostrophe accident, and credited four phantom players) | 11,614 |
+| `X has taken N damage by <Spell>.` (no source at all; ignored by decision) | 1,192 |
+| `YOU are <verb> by <Name>'s <thing> for N points of non-melee damage!` (damage shield on you) | 19,077 |
 | `` <Owner>`s warder `` / `` <Owner>`s pet `` as a source | 8,624 |
 | `X <verb>s YOU for N points of damage.` | 50,949 |
+| `X <verb>s on YOU for N points of damage.` (special attack with a preposition) | 245 |
 | `X hit you for N points of <type> damage by S.` | 4,793 |
 | `You have taken N damage from S by X.` | 5,994 |
 | `You healed X for N[ (M)] hit points by S.` | 14,085 |
