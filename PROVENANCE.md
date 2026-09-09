@@ -549,3 +549,29 @@ silently, with no error logged. Accepted for now, since the client's current
 maximum rank is X; recorded in the spec's risk table
 (`docs/specs/2026-09-08-spec-2-timers.md`, §7) against the day the client
 raises it.
+
+### 2026-09-08 — Spec 3 design: sources consulted
+
+Spec 3 (encounters) was designed from the frozen fixture, with two
+consultations recorded here as the charter requires:
+
+- **Upstream `loremaster/loremaster.py` (Tier C) — behaviour only.** A grep
+  of its pet-handling comments and docstrings was read to learn *what it
+  does*: pets announce themselves with `Attacking … Master`, summoned pets
+  have one-word names while charmed creatures keep their own, a `My leader
+  is` reply identifies a pet's owner, charm aliases are treated as ephemeral.
+  The grep output also exposed two of its regular expressions for those
+  lines. Wisp's classifier was written afterwards from the fixture's own
+  lines (`A revultant rat told you, 'Attacking an abhorrent Master.'`) and
+  shares no expression, naming or structure with them. Nothing else in that
+  file was read.
+- **EQBuddy `README.md` — product description only, no source.** Learned that
+  it derives the player's pet name from Master messages, counts pet kills as
+  the player's, and shows a charmed pet as provisional until a Master message
+  confirms it. Wisp's 120 s pet time-to-live is its own rule, chosen from the
+  fixture's announcement cadence. The standing decision not to read
+  EQBuddy's source is unchanged.
+
+Primary sources: the frozen fixture (line shapes and counts in the spec's
+appendix) and a throwaway reference implementation of the spec's rules,
+recorded in the plan, whose output is the acceptance table.
