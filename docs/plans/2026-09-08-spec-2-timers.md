@@ -52,19 +52,19 @@ Client files, in the install at `/mnt/Data4TB/Games/everquest/prefix/drive_c/use
 Frozen fixture (the live log grows; this does not):
 `/mnt/Data4TB/Games/everquest/fixtures/eqlog_Daggo_freeport.1440036.txt`, 1,440,036 lines, SHA-256 begins `70a95ca40bc701cf`. Spec 1's counts hold on it (3722 / 3065 / 39).
 
-Log line shapes (all verified in the fixture; `<name>` includes the article):
+Log line shapes (all verified on the frozen fixture; `<name>` includes the article):
 
 | Line | Count |
 |---|---|
-| `You begin casting <Spell>[ <ROMAN>].` | 17,286 |
-| `Your <Spell> spell fizzles!` | 16 |
-| `Your <Spell> spell is interrupted.` | 805 |
-| `<name> resisted your <Spell>!` | 1,948 |
-| `<name> has taken <N> damage from your <Spell>.` | 22,148 |
-| `Your <Spell> spell has worn off of <name>.` (rank stripped) | 3,735 |
+| `You begin casting <Spell>[ <ROMAN>].` | 17,131 |
+| `Your <Spell> spell fizzles!` | 15 |
+| `Your <Spell> spell is interrupted.` | 801 |
+| `<name> resisted your <Spell>!` | 1,814 |
+| `<name> has taken <N> damage from your <Spell>.` | 21,660 |
+| `Your <Spell> spell has worn off of <name>.` (rank stripped) | 3,055 |
 | `<name> has been awakened by <who>.` | 775 |
 | `You have slain <name>!` / `<name> has been slain by <who>!` | 3,722 / 3,065 |
-| `You have entered <zone>.` / `LOADING, PLEASE WAIT...` | 504 / 448 |
+| `You have entered <zone>.` / `LOADING, PLEASE WAIT...` | 494 / 440 |
 
 **Article capitalisation depends on the sentence:** awakened, DoT tick and slain-by lines print `A …`; mesmerized, yawns, worn-off and own-kill lines print `a …`. Target keys are lower-cased.
 

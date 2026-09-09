@@ -367,23 +367,23 @@ fixture (`eqlog_Daggo_freeport.txt`, 1,440,036 lines) and the EverQuest
 Legends client files in JDS300's install. Nothing here is inferred from
 another parser.
 
-**Line counts in the fixture.**
+**Line counts on the frozen fixture.**
 
 | Pattern | Count |
 |---|---|
-| `You begin casting ` | 17,286 |
-| ` spell has worn off of ` (own, spell named, target named) | 3,735 |
+| `You begin casting ` | 17,131 |
+| ` spell has worn off of ` (own, spell named, target named) | 3,055 |
 | ` has been mesmerized.` | 2,730 |
 | ` has been awakened by ` | 775 |
-| ` has taken N damage from your ` (own DoT ticks) | 22,148 |
-| ` resisted your ` | 1,948 |
-| `Your … spell is interrupted.` | 805 |
-| `Your … spell fizzles!` | 16 |
-| ` yawns.` | 810 |
+| ` has taken N damage from your ` (own DoT ticks) | 21,660 |
+| ` resisted your ` | 1,814 |
+| `Your … spell is interrupted.` | 801 |
+| `Your … spell fizzles!` | 15 |
+| ` yawns.` | 790 |
 | ` looks less aggressive.` (Pacify landing) | present; follows `You begin casting Pacify V` |
 | ` has been charmed.` | 284 |
-| `You have entered ` | 504 |
-| `LOADING, PLEASE WAIT` | 448 |
+| `You have entered ` | 494 |
+| `LOADING, PLEASE WAIT` | 440 |
 | `You have gained a level! Welcome to level N!` | 96 |
 
 **Wear-off lines strip the rank.** Cast: `You begin casting Mesmerization VI.`
