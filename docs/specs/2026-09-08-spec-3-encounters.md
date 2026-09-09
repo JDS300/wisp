@@ -72,7 +72,7 @@ full stop and are ignored.
 
 | Event | Line |
 |---|---|
-| your melee | `You <verb> <target> for <N> points of damage.` — verb is any word but `hit` |
+| your melee | `You <verb> <target> for <N> points of damage.` — any verb, including a plain `hit` with no spell |
 | your spell | `You hit <target> for <N> points of <type> damage by <Spell>.` |
 | your DoT tick | `<target> has taken <N> damage from your <Spell>.` |
 | your damage shield | `<target> is <verb> by YOUR <thing> for <N> points of non-melee damage.` |
@@ -115,9 +115,11 @@ a mob's article at the start of a sentence (Spec 2, appendix).
 3. `<Owner>\`s warder` and `<Owner>\`s pet` belong to **Owner**; if Owner is
    you, rule 2 applies.
 4. A name that starts with `a `, `an ` or `the `, or contains a space, or has
-   ever been the target of your damage or has ever damaged you, is a **mob**.
-   The last two clauses catch single-word named NPCs (`Xicotl`) once they
-   have been in a fight with you.
+   ever damaged you, or has ever been the target of damage from you or from
+   a player (a melee line whose source is not a mob; a spell line whose
+   source is a plain single word or an owned pet — the reference
+   implementation's exact marking rule), is a **mob**. The last clauses catch
+   single-word named NPCs (`Xicotl`) once they have been in a fight.
 5. Anything else is a **player**.
 
 Damage from a mob never enters the damage rows; damage to you from anything
@@ -173,12 +175,13 @@ DPS  434  in  52/s  HPS  21   0:42
 a jeering gargoyle   Mesmerization VI   12
 you            18.2k  434/s
 Serenitee      12.0k  286/s
-Misery          3.1k   74/s  ✚
+Misery          3.1k   74/s  +
 ```
 
 Amounts print as integers below 10,000, as `12.3k` below 1,000,000, else as
-`1.32M`. Healing rows carry a trailing ` ✚` (U+271A) so they read
-differently from damage rows in the same list; your rows draw in a distinct
+`1.32M`. Healing rows carry a trailing ` +` so they read
+differently from damage rows in the same list (a plain glyph the vendored
+monospace face is certain to have); your rows draw in a distinct
 colour; the personal line draws white while the fight is active and dimmed
 while it lingers. Columns are fixed width in the monospace face. The window
 is sized at attach for the kill line, the personal line, 8 timer rows, 5
@@ -213,8 +216,8 @@ reference implementation recorded in the plan before any Rust was written
 | Counter | Expected |
 |---|---|
 | encounters | `2544` |
-| damage dealt in fights by non-mob sources: melee / spell / DoT / damage shield | `15144372` / `9082968` / `4433865` / `447208` |
-| your damage in fights: by you / by your pets / total | `18030543` / `5204134` / `23234677` |
+| damage dealt in fights by non-mob sources: melee / spell / DoT / damage shield | `15199089` / `9082968` / `4433865` / `447208` |
+| your damage in fights: by you / by your pets / total | `18085260` / `5204134` / `23289394` |
 | damage taken by you in fights: melee / spell / DoT | `1917807` / `709376` / `273054` |
 | healing in fights by non-mob sources: actual / overheal | `2356833` / `837342` |
 | your healing in fights: actual / overheal / of which HoT ticks | `1875591` / `590911` / `355478` |
@@ -223,7 +226,7 @@ reference implementation recorded in the plan before any Rust was written
 | boundary lines that closed or found no fight | `971` |
 | fight duration: min / median / max / sum (s) | `1` / `35` / `683` / `146220` |
 | largest fight by your damage: damage / duration / DPS / taken | `211477` / `482` / `439` / `21020` |
-| top damage sources overall after you | `Yder 1447129`, `Serenitee 1321322`, `Misery 989452` |
+| top damage sources overall (amount desc, name asc) | `you 23289394`, `Yder 1447129`, `Serenitee 1321322`, `Misery 989452` |
 | top healers overall after you | `Serenitee 196052`, `Misery 116859` |
 
 **Live.**
