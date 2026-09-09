@@ -111,7 +111,7 @@ impl Tracker {
         &mut self.store
     }
 
-    /// Log time of the most recent timestamped line, in seconds.
+    /// Seconds since the tracker's first observed line.
     pub fn last_time(&self) -> Option<i64> {
         self.last_time
     }
@@ -129,11 +129,12 @@ impl Tracker {
         let Some(raw_now) = timestamp_text(line).and_then(parse_log_time) else {
             return;
         };
-        self.last_time = Some(raw_now);
         // Seconds since the first line ever observed -- the log's own
         // wall-clock value is never meaningful on its own, only differences
-        // are, so `timers()`'s `now_secs` speaks this same zero.
+        // are, so every exposed clock (`last_time`, `timers()`'s `now_secs`)
+        // speaks this same zero.
         let now = raw_now - *self.epoch.get_or_insert(raw_now);
+        self.last_time = Some(now);
         self.expire(now);
 
         match classify(body(line)) {
@@ -568,7 +569,7 @@ mod tests {
         t.observe(&at(0, "You begin casting Sleep."));
         t.observe(&at(3, "a rat has been mesmerized."));
         assert_eq!(t.timers(3.25)[0].remaining_ms, 23_750);
-        assert_eq!(t.last_time(), Some(crate::rules::parse_log_time("Mon Aug 10 20:00:03 2026").unwrap()));
+        assert_eq!(t.last_time(), Some(3));
     }
 
     #[test]
