@@ -328,6 +328,9 @@ impl Tracker {
             }
             CombatEvent::Boundary => {
                 self.close(false);
+                // `close(false)` only clears `lingering` when a fight was
+                // open; this is what clears an already-lingering panel on a
+                // zone change with no fight open at the time.
                 self.lingering = None;
                 self.stats.boundaries += 1;
             }
@@ -385,10 +388,15 @@ impl Tracker {
         }
     }
 
-    /// The current fight, or the last one while it lingers.
+    /// The current fight, or the last one while it lingers. An open fight
+    /// whose idle window has passed on the estimated clock is reported as
+    /// lingering even before the next line arrives to close it.
     pub fn encounter(&self, now_secs: f64) -> Option<Encounter> {
         if let Some(f) = &self.current {
-            return Some(to_encounter(f, true));
+            if now_secs <= (f.last + IDLE_SECS) as f64 {
+                return Some(to_encounter(f, true));
+            }
+            return (now_secs <= (f.last + IDLE_SECS + LINGER_SECS) as f64).then(|| to_encounter(f, false));
         }
         match &self.lingering {
             Some((f, until)) if now_secs <= *until as f64 => Some(to_encounter(f, false)),
@@ -469,6 +477,23 @@ mod tests {
         assert!(t.encounter(43.5).is_none(), "gone after the linger");
         assert_eq!(t.history().len(), 1);
         assert_eq!(t.history()[0].duration_s, 3);
+    }
+
+    #[test]
+    fn a_quiet_log_still_closes_and_clears_the_fight_on_the_estimated_clock() {
+        let mut t = tracker();
+        feed(&mut t, &[(0, "You kick a rat for 100 points of damage."), (3, "You kick a rat for 100 points of damage.")]);
+        // no further line arrives; only the estimated clock advances
+        assert!(t.encounter(13.0).unwrap().active, "still within last + IDLE_SECS");
+        assert_eq!(t.stats().encounters, 1);
+        let e = t.encounter(14.0).unwrap();
+        assert!(!e.active, "idle window passed on the estimated clock alone");
+        assert_eq!(e.duration_s, 3);
+        assert_eq!(t.stats().encounters, 1);
+        assert!(t.encounter(43.0).is_some(), "3 + 10 + 30 = 43 still visible");
+        assert_eq!(t.stats().encounters, 1);
+        assert!(t.encounter(43.5).is_none(), "gone after the linger");
+        assert_eq!(t.stats().encounters, 1, "no line arrived, so nothing was closed by observe");
     }
 
     #[test]
