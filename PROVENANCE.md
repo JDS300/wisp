@@ -482,3 +482,26 @@ Primary sources: the reference fixture and the EverQuest Legends client files
 in JDS300's install (`spells_us.txt`, 73,975 rows; `spells_us_str.txt`). The
 measurements in the spec's appendix were produced by throwaway scripts over
 the fixture on this date and are not kept.
+
+### 2026-09-08 — Spec 2 final-review fix wave: appendix counts corrected, name collisions disclosed
+
+The whole-branch review of `spec-2-timers` found two of Spec 2's own claims
+wrong against its own primary sources:
+
+- **The appendix line-count tables were measured on the live, still-growing
+  log, not the frozen fixture** (`eqlog_Daggo_freeport.1440036.txt`) the spec
+  names as its source. Re-measured every row on the frozen fixture with
+  `grep -cF`; several counts moved (e.g. `You begin casting` 17,286 →
+  17,131; DoT ticks 22,148 → 21,660; see the spec and plan appendices for
+  the full corrected tables). The mesmerized/awakened/charmed/slain counts,
+  already measured from the fixture, were unaffected.
+- **Spell names are not unique across eligible rows of `spells_us.txt`**, contrary
+  to the spec's original claim. Measured directly against the client file:
+  **706** eligible names collide (appear on more than one row), 304 of those
+  with differing capitalisation. The loader already resolved this correctly
+  (lowest id wins) but logged nothing; it now counts and reports the total
+  once at startup, and the spec text is corrected.
+
+No new sources were consulted; both corrections came from re-measuring the
+same primary sources (the frozen fixture and the local client files) already
+on record above.

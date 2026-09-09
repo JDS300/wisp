@@ -252,6 +252,13 @@ arrived* (monotonic clock, at most the 250 ms poll late). `remaining_ms` is
 under replay it is simply the last line's time. Precision is one second,
 which is the log's own.
 
+Rows expire only when a line arrives, because `expire` is a function of the
+line being processed, not of the wall clock: during a quiet log (or after a
+`--from-start` replay ends) a row already past its expiry keeps being
+published, with `remaining_ms` clamped by the HUD to 0, until the next line
+gives the tracker something to expire it against — and in play, the wear-off
+line is itself that next line.
+
 Snapshots are published at the existing 250 ms tick. Log timestamps are never
 mixed with the monotonic clock except in that one estimate, and never
 converted to absolute time.
@@ -268,10 +275,14 @@ an ice giant         Togor's Insects    131
 ```
 
 Columns are padded to fixed widths in the monospace face so rows do not
-reflow. The seconds column is white above 10 s, **warning colour at ≤ 10 s,
-critical colour at ≤ 5 s** — Wisp's own thresholds, constants in one place.
-An `estimated` row draws its seconds in a dimmer shade than a `measured`
-one, so the player can see which countdowns the daemon has verified.
+reflow. The renderer takes one colour per line, so the **whole row** is
+coloured by its remaining seconds, not just the seconds column, in this
+precedence: **critical colour at ≤ 5 s, else warning colour at ≤ 10 s, else
+a dimmer shade for an `estimated` row** the daemon hasn't verified yet,
+**else white** — Wisp's own thresholds, constants in one place. An
+estimated row inside the warning or critical window shows in that urgency
+colour, not the dim one; the dim shade only applies once neither threshold
+is crossed.
 
 The HUD draws what the latest snapshot says and nothing more: at four
 snapshots a second and a one-second display resolution there is nothing to
@@ -402,8 +413,10 @@ sessions and at 19–28 s in the latest sessions of the fixture; the last nine
 samples give a median of 24 s. The seed rule would say 38 s. Learning with a
 recency window is what makes the countdown right in both periods.
 
-**Measured natural expiry, landing to wear-off, same target, whole seconds
-(August 10 sessions).**
+**Measured natural expiry, same target, whole seconds (August 10 sessions).**
+Mesmerization VI's cluster is measured landing to wear-off; the other four
+rows are measured cast start to wear-off (cast time included), as each row's
+"Measured cluster" cell says.
 
 | Spell, rank | Client cap | Seed by the §4 rule | Measured cluster |
 |---|---|---|---|

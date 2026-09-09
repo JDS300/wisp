@@ -16,6 +16,18 @@ A headless parser plus a small in-game overlay, for Linux only.
 | `wisp` | CLI and control client — configuration, diagnostics, status. |
 | `wisp-hud` | Overlay renderer. Attaches to whichever display the game is on and draws the HUD. |
 
+Timers for spells landed on mobs read the client's own `spells_us.txt` and
+`spells_us_str.txt` from the user's EverQuest Legends install at runtime and
+are never shipped with Wisp (see Spec 2's binding rule on this). `--spells
+<dir>` overrides where `wispd` looks for them; if they aren't found, timers
+are disabled with a message rather than the daemon refusing to run. Learned
+spell durations persist across sessions at
+`$XDG_DATA_HOME/wisp/durations.json`. The automated evidence is the spell
+loader's counts against the real client files and a deterministic replay of
+a 1.44-million-line fixture log; **live verification that a mez timer
+actually counts down to zero in step with the in-game wear-off is claimed
+but unverified** — see the Status table and `PROVENANCE.md`.
+
 The split is not stylistic. On gamescope — what a Steam Deck runs — an overlay
 must be a client inside the game's own XWayland instance, on a different
 display from everything else. A single-process GUI cannot do that.
@@ -54,8 +66,8 @@ in the CLI and a config file instead.
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
 | 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
-| 2 | Parser and encounter model | Not started |
-| 3 | HUD surfaces and interaction | Not started |
+| 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — live verification (Milestone 4) pending · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
+| 3 | Encounter model | Not started |
 | 4 | Packaging and distribution | Not started |
 
 Spec 1's overlay backends and log parser are implemented and covered by

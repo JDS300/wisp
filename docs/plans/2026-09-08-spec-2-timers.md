@@ -2261,6 +2261,17 @@ Replace the section of `crates/wisp-hud/src/main.rs` from `let renderer = …` t
     }
 ```
 
+The probe must measure uniform line heights (see the final-review fix F1):
+each rendered row is padded to `Renderer::line_height()`, not left at its
+own ink height, so a probe row built from `"W"`/`9999` — neither of which
+has a descender — is not shorter than a real row containing `g`/`j`/`y`.
+Without that, the probe under-measures the frame and the bottom row clips.
+
+This task's own commit message should not claim "so nothing clips at any
+scale" — clipping was still possible on this task's code alone, until F1's
+uniform-height fix landed — and should say instead what this task alone
+provides: "sized for the kill line plus eight rows of uniform height".
+
 and add these items at module level (below `main`):
 
 ```rust
