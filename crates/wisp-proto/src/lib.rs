@@ -69,6 +69,12 @@ pub struct MeterRow {
     pub is_you: bool,
 }
 
+/// The row caps the producer (`wispd::encounter`) applies when it ranks a
+/// fight's sources, and the consumer (`wisp-hud`) relies on when it sizes
+/// its window and iterates a snapshot's rows.
+pub const MAX_DAMAGE_ROWS: usize = 5;
+pub const MAX_HEALING_ROWS: usize = 3;
+
 /// The current fight, or the last one while it lingers. `active` is false
 /// while lingering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

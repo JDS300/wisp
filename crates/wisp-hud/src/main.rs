@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-use wisp_proto::{Confidence, Encounter, MeterRow, Snapshot, Timer};
+use wisp_proto::{Confidence, Encounter, MeterRow, Snapshot, Timer, MAX_DAMAGE_ROWS, MAX_HEALING_ROWS};
 
 /// Wisp's own presentation thresholds. Not derived from anything.
 const WARNING_SECS: i64 = 10;
@@ -115,8 +115,6 @@ const CRITICAL_SECS: i64 = 5;
 const MAX_ROWS: usize = 8;
 const TARGET_COLS: usize = 20;
 const SPELL_COLS: usize = 18;
-const MAX_DAMAGE_ROWS: usize = 5;
-const MAX_HEALING_ROWS: usize = 3;
 const NAME_COLS: usize = 14;
 const EMPTY_PERSONAL: &str = "DPS     -  in    -/s  HPS    -   -:--";
 
@@ -329,5 +327,15 @@ mod tests {
         assert!(lines[1].text.starts_with("DPS"));
         assert!(lines[2].text.contains("Mesmerization"));
         assert!(lines[3].text.starts_with(&fit("you", NAME_COLS)));
+    }
+
+    #[test]
+    fn the_maximum_layout_is_one_kill_line_one_personal_line_eight_timers_five_damage_and_three_healing() {
+        let mut e = fight(true);
+        e.damage = (0..7).map(|i| MeterRow { name: format!("Player{i}"), amount: 1000 - i, per_s: 10, is_you: false }).collect();
+        e.healing = (0..5).map(|i| MeterRow { name: format!("Healer{i}"), amount: 100 - i, per_s: 5, is_you: false }).collect();
+        let mut s = snap(Some(e));
+        s.timers = (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect();
+        assert_eq!(hud_lines(&s).len(), 1 + 1 + MAX_ROWS + MAX_DAMAGE_ROWS + MAX_HEALING_ROWS);
     }
 }

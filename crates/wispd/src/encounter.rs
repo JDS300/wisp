@@ -13,7 +13,7 @@ use crate::combat::{classify, CombatEvent, DamageKind, Source};
 use crate::rules::{body, parse_log_time, timestamp_text};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use wisp_proto::{Encounter, MeterRow, Personal};
+use wisp_proto::{Encounter, MeterRow, Personal, MAX_DAMAGE_ROWS, MAX_HEALING_ROWS};
 
 /// A fight ends after this long without damage or a heal.
 pub const IDLE_SECS: i64 = 10;
@@ -21,8 +21,6 @@ pub const IDLE_SECS: i64 = 10;
 pub const PET_TTL_SECS: i64 = 120;
 /// A finished fight stays on screen this long after it ends.
 pub const LINGER_SECS: i64 = 30;
-pub const MAX_DAMAGE_ROWS: usize = 5;
-pub const MAX_HEALING_ROWS: usize = 3;
 
 const ARTICLES: [&str; 3] = ["a ", "an ", "the "];
 
@@ -61,7 +59,6 @@ pub struct EncounterStats {
 /// amount descending then name ascending.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FightSummary {
-    pub start: i64,
     pub duration_s: u64,
     pub own_damage: u64,
     pub taken: u64,
@@ -100,7 +97,6 @@ impl Fight {
     }
     fn summary(&self) -> FightSummary {
         FightSummary {
-            start: self.start,
             duration_s: self.duration(),
             own_damage: self.damage.get("you").copied().unwrap_or(0),
             taken: self.taken,
@@ -110,8 +106,10 @@ impl Fight {
     }
 }
 
+/// Callers pass `Fight::duration()`, which is already at least 1, so there
+/// is nothing here to guard against a division by zero.
 fn rate(amount: u64, duration_s: u64) -> u64 {
-    (amount as f64 / duration_s.max(1) as f64).round() as u64
+    (amount as f64 / duration_s as f64).round() as u64
 }
 
 fn meter_rows(rows: &[(String, u64)], duration_s: u64, max: usize, force_you: bool) -> Vec<MeterRow> {
