@@ -52,6 +52,13 @@ impl DurationStore {
 
     pub fn parse(json: &str) -> Result<Self, serde_json::Error> {
         let file: StoreFile = serde_json::from_str(json)?;
+        if file.v != STORE_VERSION {
+            eprintln!(
+                "wispd: ignoring duration store of version {} (expected {STORE_VERSION})",
+                file.v
+            );
+            return Ok(DurationStore::empty());
+        }
         Ok(DurationStore { samples: file.samples, path: None, dirty: false })
     }
 
@@ -109,7 +116,9 @@ impl DurationStore {
     }
 
     /// Write to a temp file beside the store and rename over it, so a crash
-    /// mid-write leaves the old store intact. No-op without a path.
+    /// mid-write leaves the old store intact. The temp name is suffixed with
+    /// this process's id so two wispd instances pointed at the same store
+    /// never collide on it. No-op without a path.
     pub fn save(&mut self) -> io::Result<()> {
         let Some(path) = self.path.clone() else {
             return Ok(());
@@ -117,8 +126,13 @@ impl DurationStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, self.to_json())?;
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        {
+            use std::io::Write;
+            let mut file = fs::File::create(&tmp)?;
+            file.write_all(self.to_json().as_bytes())?;
+            file.sync_all()?;
+        }
         fs::rename(&tmp, &path)?;
         self.dirty = false;
         Ok(())
@@ -189,6 +203,13 @@ mod tests {
     }
 
     #[test]
+    fn a_version_mismatch_is_treated_as_unreadable() {
+        let s = DurationStore::parse(r#"{"v":2,"samples":{}}"#).unwrap();
+        assert_eq!(s.samples("x", 0), &[] as &[u32]);
+        assert!(!s.is_dirty());
+    }
+
+    #[test]
     fn a_missing_or_garbled_file_is_an_empty_store() {
         let mut p = std::env::temp_dir();
         p.push(format!("wisp-durations-missing-{}.json", std::process::id()));
@@ -213,7 +234,15 @@ mod tests {
         s.save().unwrap();
         assert!(!s.is_dirty());
         assert!(path.is_file(), "created parent dirs and the file");
-        assert!(!path.with_extension("json.tmp").exists(), "temp file renamed away");
+        let leftover_tmp = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("durations.json.") && name.ends_with(".tmp")
+            });
+        assert!(!leftover_tmp, "temp file renamed away");
         let again = DurationStore::load(&path);
         assert_eq!(again.measured("Odium", 10), None);
         assert_eq!(again.samples("Odium", 10), &[50]);

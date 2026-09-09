@@ -154,13 +154,17 @@ impl SpellTable {
         })
     }
 
-    /// Read `spells_us.txt` and `spells_us_str.txt` from `dir`.
+    /// Read `spells_us.txt` and `spells_us_str.txt` from `dir`. Decoded
+    /// lossily, never assumed to be valid UTF-8: it is Daybreak's file, not
+    /// ours.
     pub fn load(dir: &Path) -> Result<SpellTable, SpellsError> {
         let read = |name: &str| {
-            fs::read_to_string(dir.join(name)).map_err(|source| SpellsError::Io {
-                file: dir.join(name).display().to_string(),
-                source,
-            })
+            fs::read(dir.join(name))
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .map_err(|source| SpellsError::Io {
+                    file: dir.join(name).display().to_string(),
+                    source,
+                })
         };
         let spells = read(SPELLS_FILE)?;
         let strings = read(STRINGS_FILE)?;
@@ -260,13 +264,26 @@ mod tests {
             + "\n"
     }
 
+    // The parser only ever reads field 4 (CASTEDOTHERTXT, the landing
+    // prose); CASTEDMETXT and SPELLGONE are left empty rather than
+    // populated with unused prose the fixture doesn't need.
+    fn str_row(id: u32, cast_on_other: &str) -> String {
+        let mut f: Vec<String> = vec![String::new(); 6];
+        f[S_ID] = id.to_string();
+        f[S_CAST_ON_OTHER] = cast_on_other.to_string();
+        f.join("^") + "^"
+    }
+
     fn strings_text() -> String {
-        "#SPELLINDEX^CASTERMETXT^CASTEROTHERTXT^CASTEDMETXT^CASTEDOTHERTXT^SPELLGONE^\n\
-         1^^^You are mesmerized.^ has been mesmerized.^You are no longer mesmerized.^\n\
-         2^^^You feel your aggression subside.^ looks less aggressive.^^\n\
-         3^^^You feel protected.^ looks protected.^^\n\
-         6^^^^ shivers.^^\n"
-            .to_string()
+        let header = "#SPELLINDEX^CASTERMETXT^CASTEROTHERTXT^CASTEDMETXT^CASTEDOTHERTXT^SPELLGONE^\n";
+        let rows = [
+            str_row(1, MEZ_PROSE),
+            str_row(2, LULL_PROSE),
+            str_row(3, " looks protected."),
+            str_row(6, " shivers."),
+        ]
+        .join("\n");
+        format!("{header}{rows}\n")
     }
 
     #[test]
