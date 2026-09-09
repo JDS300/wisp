@@ -6,6 +6,8 @@ mod server;
 #[allow(dead_code)] // wired into the pipeline in Task 6
 mod spells;
 mod tail;
+#[allow(dead_code)] // wired into the pipeline in Task 6
+mod timers;
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

@@ -48,7 +48,6 @@ pub fn session_boundary(line: &str) -> bool {
 }
 
 /// Rank numerals the log appends to an upgraded spell: `Mesmerization VI`.
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 const ROMAN: [(&str, u8); 10] = [
     ("I", 1), ("II", 2), ("III", 3), ("IV", 4), ("V", 5),
     ("VI", 6), ("VII", 7), ("VIII", 8), ("IX", 9), ("X", 10),
@@ -60,7 +59,6 @@ const ROMAN: [(&str, u8); 10] = [
 /// the client data has one row per spell and no row for `Mesmerization VI`.
 /// Names that legitimately end in numeral letters are the charter's trap,
 /// and the table -- not this function -- decides them.
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 pub fn split_rank(text: &str, known: impl Fn(&str) -> bool) -> Option<(&str, u8)> {
     if known(text) {
         return Some((text, 0));
@@ -79,7 +77,6 @@ pub fn split_rank(text: &str, known: impl Fn(&str) -> bool) -> Option<(&str, u8)
 /// Only differences between two values from the same log are meaningful.
 /// No zone is applied and none is implied: EverQuest writes local wall
 /// clock, and Wisp subtracts rather than relabels (spec §3).
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 pub fn parse_log_time(ts: &str) -> Option<i64> {
     let mut parts = ts.split_whitespace();
     let _weekday = parts.next()?;
@@ -105,7 +102,6 @@ pub fn parse_log_time(ts: &str) -> Option<i64> {
 
 /// Days since 1970-01-01 for a proleptic Gregorian date. Howard Hinnant's
 /// algorithm; pure integer arithmetic, no calendar library.
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -119,7 +115,6 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// What one log line means to the timer state machine. Borrowed from the
 /// line's body; `Other` carries the body for prose-landing matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 pub enum Event<'a> {
     CastBegin { spell_text: &'a str },
     Fizzle { spell: &'a str },
@@ -135,7 +130,6 @@ pub enum Event<'a> {
 
 /// Classify a line body (timestamp already stripped). Every shape here was
 /// read from the reference fixture; none is inferred from another client.
-#[allow(dead_code)] // consumed by the timer state machine in Task 5
 pub fn classify(body: &str) -> Event<'_> {
     if let Some(rest) = body.strip_prefix("You begin casting ") {
         if let Some(spell_text) = rest.strip_suffix('.') {
