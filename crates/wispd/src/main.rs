@@ -2,6 +2,8 @@
 mod rules;
 mod server;
 mod tail;
+#[allow(dead_code)] // wired into the pipeline in Task 6
+mod durations;
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
