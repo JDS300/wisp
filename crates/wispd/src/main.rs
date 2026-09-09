@@ -137,6 +137,7 @@ fn main() -> std::io::Result<()> {
             lines_ingested: counters.lines_ingested,
             session_kills: counters.session_kills,
             timers: timers_now,
+            encounter: None,
         };
         srv.accept_pending(&snapshot);
         srv.broadcast(&snapshot);

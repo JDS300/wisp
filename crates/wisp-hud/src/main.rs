@@ -192,8 +192,9 @@ mod tests {
     #[test]
     fn rows_are_fixed_width_and_the_rank_is_roman() {
         let snap = Snapshot {
-            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
+            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
             timers: vec![timer(11_800, Confidence::Measured)],
+            encounter: None,
         };
         let lines = hud_lines(&snap);
         assert_eq!(lines[0].text, "7 kills");
@@ -204,8 +205,9 @@ mod tests {
         // spells seed above 9999 s) still renders as "9999", not a wider
         // number that would break the probe's fixed width.
         let snap = Snapshot {
-            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
+            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
             timers: vec![timer(100_000_000, Confidence::Measured)],
+            encounter: None,
         };
         let lines = hud_lines(&snap);
         assert_eq!(lines[1].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 9999));
@@ -214,8 +216,9 @@ mod tests {
     #[test]
     fn at_most_eight_rows_are_drawn() {
         let snap = Snapshot {
-            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 0,
+            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 0,
             timers: (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect(),
+            encounter: None,
         };
         assert_eq!(hud_lines(&snap).len(), 1 + MAX_ROWS);
     }
