@@ -103,8 +103,11 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
         let (left, n) = head.rsplit_once(" for ")?;
         let amount = amount(n)?;
         if let Some(src) = left.strip_suffix(" YOU") {
-            let (source, _verb) = src.rsplit_once(' ')?;
-            return Some(Taken { source, amount, kind: Melee });
+            if let Some((source, verb)) = src.rsplit_once(' ') {
+                if verb.ends_with('s') && is_plain_word(verb) {
+                    return Some(Taken { source, amount, kind: Melee });
+                }
+            }
         }
         if let Some(rest) = left.strip_prefix("You ") {
             let (_verb, target) = rest.split_once(' ')?;
@@ -239,6 +242,18 @@ mod tests {
             Some(Taken { source: "Princess Cherista", amount: 175, kind: Spell }));
         assert_eq!(classify("You have taken 30 damage from Deadly Poison by a revultant rat."),
             Some(Taken { source: "a revultant rat", amount: 30, kind: Dot }));
+    }
+
+    #[test]
+    fn a_special_attack_with_a_preposition_before_you_is_not_taken_damage() {
+        // "An icy terror frenzies on YOU for 13 points of damage." -- the word
+        // directly before YOU is "on", not a verb ending in 's', so this is
+        // not the `<verb>s YOU` shape (fixture: 245 such lines, found while
+        // debugging the Spec 3 replay). It falls through to the general
+        // other-source melee shape instead, with a garbage target ("on YOU");
+        // the mob-sourced target is discarded by the encounter tracker.
+        assert_eq!(classify("An icy terror frenzies on YOU for 13 points of damage."),
+            Some(Damage { source: n("An icy terror"), target: "on YOU", amount: 13, kind: Melee }));
     }
 
     #[test]
