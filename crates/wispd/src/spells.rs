@@ -64,6 +64,7 @@ impl std::error::Error for SpellsError {}
 #[derive(Debug)]
 pub struct SpellTable {
     by_name: HashMap<String, SpellInfo>,
+    #[cfg(test)]
     rows_parsed: usize,
 }
 
@@ -90,7 +91,8 @@ impl SpellTable {
         }
 
         let mut by_name: HashMap<String, SpellInfo> = HashMap::new();
-        let mut rows_parsed = 0;
+        #[cfg(test)]
+        let mut rows_parsed = 0usize;
         for (i, line) in spells.lines().enumerate() {
             if line.is_empty() {
                 continue;
@@ -103,7 +105,10 @@ impl SpellTable {
                     reason: format!("expected {FIELD_COUNT} fields, found {}", f.len()),
                 });
             }
-            rows_parsed += 1;
+            #[cfg(test)]
+            {
+                rows_parsed += 1;
+            }
             let id = parse_int(f[F_ID], SPELLS_FILE, i + 1, "id")? as u32;
             let cast_ms = parse_int(f[F_CAST_MS], SPELLS_FILE, i + 1, "cast time")? as u32;
             let cap_ticks = parse_float(f[F_CAP_TICKS], SPELLS_FILE, i + 1, "duration cap")?;
@@ -126,7 +131,11 @@ impl SpellTable {
                 }
             }
         }
-        Ok(SpellTable { by_name, rows_parsed })
+        Ok(SpellTable {
+            by_name,
+            #[cfg(test)]
+            rows_parsed,
+        })
     }
 
     /// Read `spells_us.txt` and `spells_us_str.txt` from `dir`.
@@ -150,11 +159,13 @@ impl SpellTable {
         self.by_name.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
 
     /// Rows seen in `spells_us.txt`, eligible or not. 73,975 on the current client.
+    #[cfg(test)]
     pub fn rows_parsed(&self) -> usize {
         self.rows_parsed
     }
@@ -245,6 +256,20 @@ mod tests {
         assert_eq!(sleep.cap_ticks, 4.0);
         assert!(sleep.detrimental);
         assert_eq!(sleep.lands_as.as_deref(), Some(MEZ_PROSE));
+        assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn a_table_with_no_eligible_rows_is_empty() {
+        let spells = [
+            row(3, "Ward", 2000, "10", 1), // beneficial buff: not eligible
+            row(4, "Jab", 1000, "0", 0),   // no duration: not eligible
+        ]
+        .join("\n")
+            + "\n";
+        let t = SpellTable::parse(&spells, &strings_text()).unwrap();
+        assert!(t.is_empty());
+        assert_eq!(t.len(), 0);
     }
 
     #[test]

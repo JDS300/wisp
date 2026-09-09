@@ -59,21 +59,12 @@ fn main() -> std::io::Result<()> {
                     None
                 }
                 Some(dir) => match spells::SpellTable::load(&dir) {
-                    // A directory that parses but yields nothing eligible is
-                    // as useless as one that doesn't parse at all: say so and
-                    // run without timers rather than a Tracker with an empty
-                    // table.
-                    Ok(table) if table.is_empty() => {
-                        eprintln!("wispd: timers disabled: no eligible spells parsed from {}", dir.display());
-                        None
-                    }
                     Ok(table) => {
                         let store_path = durations::DurationStore::default_path();
                         let store = durations::DurationStore::load(&store_path);
                         eprintln!(
-                            "wispd: {} eligible spells ({} rows parsed) from {}; durations in {}",
+                            "wispd: {} eligible spells from {}; durations in {}",
                             table.len(),
-                            table.rows_parsed(),
                             dir.display(),
                             store_path.display()
                         );
@@ -136,32 +127,6 @@ fn main() -> std::io::Result<()> {
             None if stub => stub_timers(seq),
             None => Vec::new(),
         };
-
-        // A coarse health line for anyone tailing stderr: once every five
-        // minutes of wall clock, not tied to log volume. The sample counts
-        // behind each measured row are what makes a jump to "measured"
-        // confidence auditable after the fact.
-        if let Some(tr) = tracker.as_ref() {
-            if seq.is_multiple_of(1200) {
-                let s = tr.stats();
-                let measured: Vec<String> = timers_now
-                    .iter()
-                    .filter(|t| t.confidence == Confidence::Measured)
-                    .map(|t| format!("{} x{} ({} samples)", t.spell, t.rank, tr.store().samples(&t.spell, t.rank).len()))
-                    .collect();
-                eprintln!(
-                    "wispd: timers: {} active, {} pending; armed {} (mez {} dot {} debuff {}), samples {}; measured: [{}]",
-                    tr.active_count(),
-                    tr.pending_count(),
-                    s.armed,
-                    s.armed_mez,
-                    s.armed_dot,
-                    s.armed_debuff,
-                    s.samples,
-                    measured.join(", "),
-                );
-            }
-        }
 
         seq += 1;
         let snapshot = Snapshot {

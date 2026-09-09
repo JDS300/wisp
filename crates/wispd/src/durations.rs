@@ -99,6 +99,7 @@ impl DurationStore {
         Some(sorted[(sorted.len() - 1) / 2])
     }
 
+    #[cfg(test)]
     pub fn samples(&self, spell: &str, rank: u8) -> &[u32] {
         self.samples.get(&key(spell, rank)).map(Vec::as_slice).unwrap_or(&[])
     }

@@ -99,6 +99,7 @@ impl Tracker {
         }
     }
 
+    #[cfg(test)]
     pub fn stats(&self) -> &TrackerStats {
         &self.stats
     }
@@ -116,10 +117,12 @@ impl Tracker {
         self.last_time
     }
 
+    #[cfg(test)]
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
 
+    #[cfg(test)]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
