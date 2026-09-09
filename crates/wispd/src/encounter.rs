@@ -46,6 +46,7 @@ pub struct EncounterStats {
     pub taken_melee: u64,
     pub taken_spell: u64,
     pub taken_dot: u64,
+    pub taken_shield: u64,
     pub heal_actual: u64,
     pub heal_over: u64,
     pub own_heal_actual: u64,
@@ -342,7 +343,7 @@ impl Tracker {
                     DamageKind::Melee => self.stats.taken_melee += amount,
                     DamageKind::Spell => self.stats.taken_spell += amount,
                     DamageKind::Dot => self.stats.taken_dot += amount,
-                    DamageKind::Shield => {}
+                    DamageKind::Shield => self.stats.taken_shield += amount,
                 }
             }
             CombatEvent::Damage { source, target, amount, kind } => {
@@ -610,34 +611,35 @@ mod tests {
         assert_eq!(
             *t.stats(),
             EncounterStats {
-                encounters: 2544,
-                dmg_out_melee: 15199089,
+                encounters: 2524,
+                dmg_out_melee: 15198942,
                 dmg_out_spell: 9082968,
-                dmg_out_dot: 4433865,
+                dmg_out_dot: 4622907,
                 dmg_out_shield: 447208,
                 own_self_dmg: 18085260,
-                own_pet_dmg: 5204134,
-                taken_melee: 1917807,
+                own_pet_dmg: 5284285,
+                taken_melee: 1924867,
                 taken_spell: 709376,
                 taken_dot: 273054,
-                heal_actual: 2356833,
-                heal_over: 837342,
-                own_heal_actual: 1875591,
+                taken_shield: 257300,
+                heal_actual: 2364526,
+                heal_over: 838539,
+                own_heal_actual: 1875603,
                 own_heal_over: 590911,
                 own_hot_actual: 355478,
-                heal_outside_fight: 266814,
+                heal_outside_fight: 259121,
                 pet_announcements: 4890,
                 boundaries: 971,
             }
         );
         assert_eq!(t.pet_count(), 91);
         let h = t.history();
-        assert_eq!(h.len(), 2544);
+        assert_eq!(h.len(), 2524);
         let mut durs: Vec<u64> = h.iter().map(|f| f.duration_s).collect();
         durs.sort_unstable();
-        assert_eq!((durs[0], durs[durs.len() / 2], *durs.last().unwrap(), durs.iter().sum::<u64>()), (1, 35, 683, 146220));
+        assert_eq!((durs[0], durs[durs.len() / 2], *durs.last().unwrap(), durs.iter().sum::<u64>()), (1, 36, 738, 146813));
         let big = h.iter().max_by_key(|f| f.own_damage).unwrap();
-        assert_eq!((big.own_damage, big.duration_s, (big.own_damage as f64 / big.duration_s as f64).round() as u64, big.taken), (211477, 482, 439, 21020));
+        assert_eq!((big.own_damage, big.duration_s, (big.own_damage as f64 / big.duration_s as f64).round() as u64, big.taken), (212467, 482, 441, 21416));
         let mut dmg: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         let mut heal: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for f in h {
@@ -651,9 +653,9 @@ mod tests {
             v
         };
         assert_eq!(top(&dmg, 4), vec![
-            ("you".to_string(), 23289394), ("Yder".to_string(), 1447129),
-            ("Serenitee".to_string(), 1321322), ("Misery".to_string(), 989452)]);
+            ("you".to_string(), 23369545), ("Yder".to_string(), 1447129),
+            ("Serenitee".to_string(), 1321322), ("Misery".to_string(), 1000700)]);
         assert_eq!(top(&heal, 3), vec![
-            ("you".to_string(), 1875591), ("Serenitee".to_string(), 196052), ("Misery".to_string(), 116859)]);
+            ("you".to_string(), 1875603), ("Serenitee".to_string(), 196052), ("Misery".to_string(), 116859)]);
     }
 }

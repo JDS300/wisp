@@ -103,6 +103,11 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
         let (left, n) = head.rsplit_once(" for ")?;
         let amount = amount(n)?;
         if let Some(src) = left.strip_suffix(" YOU") {
+            // A special attack with a preposition before YOU, e.g.
+            // "An icy terror frenzies on YOU for 13 points of damage.": strip
+            // the trailing " on" too, so the verb is still the plain word
+            // ending in 's' that it would be without the preposition.
+            let src = src.strip_suffix(" on").unwrap_or(src);
             if let Some((source, verb)) = src.rsplit_once(' ') {
                 if verb.ends_with('s') && is_plain_word(verb) {
                     return Some(Taken { source, amount, kind: Melee });
@@ -130,6 +135,18 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
         return Some(Damage { source: Source::Named(source), target, amount, kind: Shield });
     }
 
+    // Damage shield on you: `YOU are <verb> by <source>'s <thing> for N
+    // points of non-melee damage!` -- ends in `!`, so this must be checked
+    // before the `.`-suffix branches below.
+    if let Some(head) = b.strip_suffix(" points of non-melee damage!") {
+        let (left, n) = head.rsplit_once(" for ")?;
+        let amount = amount(n)?;
+        let rest = left.strip_prefix("YOU are ")?;
+        let (_verb, by) = rest.split_once(" by ")?;
+        let (source, _thing) = by.split_once("'s ")?;
+        return Some(Taken { source, amount, kind: Shield });
+    }
+
     let head = b.strip_suffix('.')?;
 
     // Spell: `… for N points of <type> damage by <Spell>.`
@@ -148,7 +165,11 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
     }
 
     // DoT ticks: `You have taken N damage from <Spell> by <source>.`,
-    // `<target> has taken N damage from your <Spell>.`, `… from <source>'s <Spell>.`
+    // `<target> has taken N damage from your <Spell>.`,
+    // `<target> has taken N damage from <Spell> by <source>.` Source is
+    // everything after the *last* " by ", since a spell name may itself
+    // carry an apostrophe (a possessive bard song title); a line with no
+    // " by " at all names no source and is not an event.
     if let Some(rest) = head.strip_prefix("You have taken ") {
         let (n, rest) = rest.split_once(" damage from ")?;
         let (_spell, source) = rest.split_once(" by ")?;
@@ -160,7 +181,7 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
             if from.strip_prefix("your ").is_some() {
                 return Some(Damage { source: Source::You, target, amount, kind: Dot });
             }
-            let (source, _spell) = from.split_once("'s ")?;
+            let (_spell, source) = from.rsplit_once(" by ")?;
             return Some(Damage { source: Source::Named(source), target, amount, kind: Dot });
         }
     }
@@ -226,12 +247,36 @@ mod tests {
             Some(Damage { source: n("A gnoll scout"), target: "Zaiv", amount: 5, kind: Melee }));
         assert_eq!(classify("Kebanab hit Guard Wytiffin for 250 points of magic damage by Life Leech."),
             Some(Damage { source: n("Kebanab"), target: "Guard Wytiffin", amount: 250, kind: Spell }));
-        assert_eq!(classify("a rat has taken 12 damage from Serenitee's Envenomed Bolt."),
+        assert_eq!(classify("a rat has taken 12 damage from Envenomed Bolt by Serenitee."),
             Some(Damage { source: n("Serenitee"), target: "a rat", amount: 12, kind: Dot }));
         assert_eq!(classify("Guard Xyxax is burned by Skullgrinder's flames for 15 points of non-melee damage."),
             Some(Damage { source: n("Skullgrinder"), target: "Guard Xyxax", amount: 15, kind: Shield }));
         assert_eq!(classify("Jennie`s warder claws a rat for 40 points of damage."),
             Some(Damage { source: n("Jennie`s warder"), target: "a rat", amount: 40, kind: Melee }));
+    }
+
+    #[test]
+    fn other_sources_dot_ticks_split_on_the_last_by_not_an_apostrophe() {
+        // The possessive rule (`from <source>'s <Spell>`) matched apostrophes
+        // inside bard song names and credited phantom players. The real
+        // shape names the spell first, then the source after the last " by ",
+        // so a spell name containing its own apostrophe (a possessive song
+        // title) no longer confuses the split (11,614 lines in the fixture).
+        assert_eq!(classify("A rat has taken 12 damage from Envenomed Bolt by Serenitee."),
+            Some(Damage { source: n("Serenitee"), target: "A rat", amount: 12, kind: Dot }));
+        assert_eq!(classify("a spectre has taken 102 damage from Selo's Chords of Cessation VII by Kiil."),
+            Some(Damage { source: n("Kiil"), target: "a spectre", amount: 102, kind: Dot }),
+            "the apostrophe in the spell name no longer matters");
+        assert_eq!(classify("A revultant rat has taken 30 damage by Deadly Poison."),
+            None, "no ` by <source>` after `damage`: the line carries no source and is ignored (1,192 lines)");
+    }
+
+    #[test]
+    fn a_damage_shield_lands_on_you() {
+        // `YOU are <verb> by <source>'s <thing> for N points of non-melee
+        // damage!` -- note `YOU are` and the line ends in `!` (19,077 lines).
+        assert_eq!(classify("YOU are burned by a revultant rat's flames for 20 points of non-melee damage!"),
+            Some(Taken { source: "a revultant rat", amount: 20, kind: Shield }));
     }
 
     #[test]
@@ -245,15 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn a_special_attack_with_a_preposition_before_you_is_not_taken_damage() {
-        // "An icy terror frenzies on YOU for 13 points of damage." -- the word
-        // directly before YOU is "on", not a verb ending in 's', so this is
-        // not the `<verb>s YOU` shape (fixture: 245 such lines, found while
-        // debugging the Spec 3 replay). It falls through to the general
-        // other-source melee shape instead, with a garbage target ("on YOU");
-        // the mob-sourced target is discarded by the encounter tracker.
+    fn a_special_attack_with_a_preposition_before_you_is_taken_damage() {
+        // "An icy terror frenzies on YOU for 13 points of damage." -- after
+        // stripping " YOU", also strip a trailing " on"; the remaining verb
+        // still ends in 's', so this is the `<verb>s YOU` shape after all
+        // (fixture: 245 such lines, found while debugging the Spec 3 replay).
         assert_eq!(classify("An icy terror frenzies on YOU for 13 points of damage."),
-            Some(Damage { source: n("An icy terror"), target: "on YOU", amount: 13, kind: Melee }));
+            Some(Taken { source: "An icy terror", amount: 13, kind: Melee }));
     }
 
     #[test]
