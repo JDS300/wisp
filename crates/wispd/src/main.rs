@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+#[allow(dead_code)] // wired into the pipeline in Task 4
+mod combat;
 mod durations;
 mod rules;
 mod server;
