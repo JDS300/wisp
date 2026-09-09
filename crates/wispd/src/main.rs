@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
-mod rules;
-mod server;
-mod tail;
 #[allow(dead_code)] // wired into the pipeline in Task 6
 mod durations;
+mod rules;
+mod server;
+#[allow(dead_code)] // wired into the pipeline in Task 6
+mod spells;
+mod tail;
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
