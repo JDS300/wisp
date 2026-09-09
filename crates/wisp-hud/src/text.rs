@@ -42,8 +42,36 @@ impl Renderer {
         self.render_one(text, [255, 255, 255])
     }
 
+    /// The height every rendered line is padded to, from the font's own
+    /// vertical metrics at this renderer's scale: ascent minus descent,
+    /// rounded up. Falls back to the rendered ink height of `"Wg"` (an
+    /// ascender and a descender together) for a font that reports no
+    /// metrics. Used so every HUD row is the same height regardless of
+    /// which glyphs it happens to contain.
+    pub fn line_height(&self) -> u32 {
+        match self.font.horizontal_line_metrics(self.scale_px) {
+            Some(m) => (m.ascent - m.descent).ceil().max(1.0) as u32,
+            None => {
+                let (ascent, descent) = self.ink_extent("Wg");
+                (ascent + descent).max(1) as u32
+            }
+        }
+    }
+
+    /// Ascent and descent, in pixels, of the tallest and lowest glyph in
+    /// `text`, each clamped at zero. Metrics only -- no bitmaps -- so this
+    /// is cheap enough for `line_height`'s fallback to call without
+    /// recursing back into `render_one`.
+    fn ink_extent(&self, text: &str) -> (i32, i32) {
+        let metrics: Vec<_> = text.chars().map(|c| self.font.metrics(c, self.scale_px)).collect();
+        let ascent = metrics.iter().map(|m| (m.ymin + m.height as i32).max(0)).max().unwrap_or(0);
+        let descent = metrics.iter().map(|m| (-m.ymin).max(0)).max().unwrap_or(0);
+        (ascent, descent)
+    }
+
     /// Stack lines top to bottom, `LINE_GAP_PX` apart, left-aligned, the
-    /// canvas as wide as the widest line.
+    /// canvas as wide as the widest line. Every line is the same height
+    /// (`line_height`, or its own ink if that is somehow taller).
     pub fn render_lines(&self, lines: &[Line]) -> Frame {
         let frames: Vec<Frame> = lines.iter().map(|l| self.render_one(&l.text, l.rgb)).collect();
         if frames.is_empty() {
@@ -97,7 +125,12 @@ impl Renderer {
             .max()
             .unwrap_or(0);
         let baseline = max_ascent;
-        let height = (max_ascent + max_descent).max(1) as u32;
+        let ink_height = (max_ascent + max_descent).max(1) as u32;
+        // Every row is padded to the same height regardless of its glyphs;
+        // the padding lands below the ink (the canvas grows downward, the
+        // baseline does not move), so a row without descenders simply has
+        // blank pixels under it rather than sitting off-centre.
+        let height = ink_height.max(self.line_height());
         let width = advance * rasterised.len() as u32;
 
         let mut rgba = vec![0u8; (width * height * 4) as usize];
@@ -202,9 +235,24 @@ mod tests {
             Line { text: "1234".to_string(), rgb: [255, 255, 255] },
         ]);
         assert_eq!(frame.width, long.width, "as wide as the widest line");
-        // Heights are per line: '3' has a one-pixel descender that '1' and '2' lack.
-        assert_eq!(frame.height, short.height + long.height + LINE_GAP_PX);
+        // Rows are now uniform height (F1): both lines are all-digit, so
+        // both are padded up to the same `line_height()` and the per-line
+        // "short vs long" height difference the old comment described no
+        // longer holds. short.height == long.height == r.line_height() here.
+        assert_eq!(short.height, long.height, "digits alone are padded to the same row height");
+        assert_eq!(frame.height, 2 * r.line_height() + LINE_GAP_PX);
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+    }
+
+    #[test]
+    fn rows_are_the_same_height_regardless_of_descenders() {
+        let r = Renderer::new(32.0);
+        let no_descenders = r.render("1234");
+        let all_descenders = r.render("gjpqy");
+        assert_eq!(
+            no_descenders.height, all_descenders.height,
+            "every row is padded to line_height(), so descenders don't make a row taller"
+        );
     }
 
     #[test]

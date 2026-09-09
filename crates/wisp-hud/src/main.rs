@@ -154,7 +154,10 @@ fn hud_lines(snap: &Snapshot) -> Vec<text::Line> {
     let mut lines = vec![text::Line { text: format!("{} kills", snap.session_kills), rgb: WHITE }];
     for t in snap.timers.iter().take(MAX_ROWS) {
         let spell = if t.rank == 0 { t.spell.clone() } else { format!("{} {}", t.spell, roman(t.rank)) };
-        let secs = t.remaining_ms.div_euclid(1000).max(0);
+        // Clamped to what the `{:>4}` column (and the startup probe's width)
+        // can hold: a freshly seeded timer for one of the longer-capped
+        // spells can seed above 9999 s.
+        let secs = t.remaining_ms.div_euclid(1000).clamp(0, 9999);
         lines.push(text::Line { text: format_row(&t.target, &spell, secs), rgb: row_colour(t) });
     }
     lines
@@ -196,6 +199,16 @@ mod tests {
         assert_eq!(lines[0].text, "7 kills");
         assert_eq!(lines[1].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 11));
         assert_eq!(fit("a very long mob name indeed", 20).chars().count(), 20);
+
+        // A timer seeded far above the four-digit column (512 eligible
+        // spells seed above 9999 s) still renders as "9999", not a wider
+        // number that would break the probe's fixed width.
+        let snap = Snapshot {
+            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
+            timers: vec![timer(100_000_000, Confidence::Measured)],
+        };
+        let lines = hud_lines(&snap);
+        assert_eq!(lines[1].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 9999));
     }
 
     #[test]
