@@ -71,6 +71,7 @@ fn main() -> std::io::Result<()> {
             ts: counters.last_ts.clone(),
             lines_ingested: counters.lines_ingested,
             session_kills: counters.session_kills,
+            timers: Vec::new(),
         };
         srv.accept_pending(&snapshot);
         srv.broadcast(&snapshot);

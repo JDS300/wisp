@@ -106,6 +106,7 @@ mod tests {
             ts: "Mon Aug 10 20:39:54 2026".to_string(),
             lines_ingested: seq * 10,
             session_kills: kills,
+            timers: Vec::new(),
         }
     }
 

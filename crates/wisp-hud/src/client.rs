@@ -79,7 +79,7 @@ mod tests {
             let (mut sock, _) = listener.accept().unwrap();
             for seq in 1..=3 {
                 let line = format!(
-                    r#"{{"v":1,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
+                    r#"{{"v":2,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
                     seq * 10
                 );
                 sock.write_all(line.as_bytes()).unwrap();
