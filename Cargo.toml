@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/wisp-proto", "crates/wispd", "crates/wisp-hud"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["JDS300"]
+repository = "https://github.com/JDS300/wisp"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -2,14 +2,9 @@
 
 **A light over the fight.**
 
-EverQuest log parser and in-game overlay for Linux and Steam Deck.
+EverQuest Legends log parser and in-game overlay for Linux and Steam Deck.
 
 ---
-
-> [!NOTE]
-> **Nothing is built yet.** This repository currently contains its founding
-> documents only — the licence, the provenance record, and the charter that
-> governs what may be written here. Code begins with Spec 1.
 
 ## What this will be
 
@@ -17,7 +12,7 @@ A headless parser plus a small in-game overlay, for Linux only.
 
 | Component | Role |
 |---|---|
-| `wispd` | Headless parser. Tails the EverQuest text log and emits state snapshots over IPC. No UI, no display connection. |
+| `wispd` | Headless parser. Tails the EverQuest Legends text log and emits state snapshots over IPC. No UI, no display connection. |
 | `wisp` | CLI and control client — configuration, diagnostics, status. |
 | `wisp-hud` | Overlay renderer. Attaches to whichever display the game is on and draws the HUD. |
 
@@ -37,10 +32,14 @@ By asking the compositor, not by touching the game.
 - **On desktop Wayland (KDE, Sway, Hyprland, river):** a `wlr-layer-shell`
   surface on the overlay layer.
 - **On GNOME:** no layer-shell exists, so an ordinary always-on-top window.
+  This cannot reliably composite above a fullscreen game -- an ordinary
+  window has no way to force itself above exclusive fullscreen content, only
+  above other ordinary windows. GNOME users should run the game windowed or
+  borderless.
 
 **No injection, no `LD_PRELOAD`, no Vulkan layer, no reading game memory.**
 Wisp is a sibling window that the compositor is asked to put on top. It reads
-the log file EverQuest already writes, and nothing else.
+the log file EverQuest Legends already writes, and nothing else.
 
 **The HUD never takes input** — not focusable, not clickable, not draggable, on
 any backend. EverQuest confines the pointer during right-click mouse-look, and
@@ -54,10 +53,22 @@ in the CLI and a config file instead.
 | Spec | Subject | State |
 |---|---|---|
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Approved, not started |
+| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | Parser and encounter model | Not started |
 | 3 | HUD surfaces and interaction | Not started |
 | 4 | Packaging and distribution | Not started |
+
+Spec 1's overlay backends and log parser are implemented and covered by
+automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and
+gamescope X11 backends live over EverQuest Legends on the desktop:** each
+ran the kill counter live above his gamescope session with
+`--force-grab-cursor`, mouse-look unaffected. **Plain-window click-through
+and handheld (Steam Deck / Legion Go S) support remain claimed but
+unverified** — see `PROVENANCE.md` for exactly what was and was not
+verified, and how. Launching `wisp-hud` from the desktop with no flags
+selects layer-shell; to use the gamescope backend instead, find gamescope's
+own XWayland with `pgrep -a Xwayland` and launch `wisp-hud` with `DISPLAY`
+set to that number.
 
 ## Provenance
 

@@ -223,3 +223,235 @@ be verified with real pixels on real hardware, not inferred.
   project metadata, `README.md`, `LICENSE`, `NOTICE` and `.csproj` files;
   no implementation source read. Building Wisp on `EQBuddy.Core` was considered
   and explicitly rejected in favour of independence. See the disclosure above.
+
+### 2026-09-08 — gamescope overlay backend: stand-in verification
+
+Task 6 (Milestone 2) implemented the gamescope X11 overlay backend
+(`crates/wisp-hud/src/backend/gamescope_x11.rs`): an ordinary, unprivileged
+X11 client window inside gamescope's XWayland, marked with
+`GAMESCOPE_EXTERNAL_OVERLAY=1` and `GAMESCOPE_NO_FOCUS=1`, with an empty
+XFixes input-shape region set belt-and-braces.
+
+What was actually verified, against a real X server, with `glxgears` standing
+in for EverQuest (per the constraints, `vkcube` is a poor stand-in and
+launching EverQuest or Lutris, or synthesising input via `xdotool`/`XTEST`,
+is off-limits on this machine):
+
+- `wispd --stub` running, `gamescope -W 2560 -H 1440 -w 2560 -h 1440 -b --
+  glxgears` launched cleanly on the desktop's NVIDIA 610.57.04 driver with
+  those flags (no `--force-grab-cursor`, matching the brief's Step 6, not the
+  full test-rig invocation).
+- Gamescope's XWayland was `:1` (17 `GAMESCOPE_*` root properties; `:2` and
+  `:3` had none).
+- `wisp-hud` launched with `DISPLAY=:1`, chose the `GamescopeX11` backend
+  automatically (via `root_atom_names()`), and logged that it selected a
+  depth-32 ARGB visual (gamescope's XWayland offers one, so the depth-24
+  BGRX fallback path did not run this time).
+- `xwininfo -root -children` on `:1` found the HUD's window at
+  `0x600000`, geometry `400x80+0+0` alongside `glxgears`'s window and
+  `steamcompmgr`.
+- `xwininfo -id 0x600000 -stats` confirmed `Depth: 32`, `Visual Class:
+  TrueColor`, `Override Redirect State: yes`.
+- `xprop -id 0x600000` read back both atoms:
+  ```
+  GAMESCOPE_NO_FOCUS(CARDINAL) = 1
+  GAMESCOPE_EXTERNAL_OVERLAY(CARDINAL) = 1
+  ```
+- `wisp-hud` ran for its full window without an X protocol error (no BadMatch
+  from the ARGB window/colormap setup, no failed `put_image` on repeated
+  240ms-interval snapshots from the stub daemon).
+- All processes (`wisp-hud`, `gamescope`, `glxgears`, `wispd`) were killed
+  afterward and `pgrep` confirmed none remained; the socket file was removed.
+
+**Not verified, and not attempted:** whether `GAMESCOPE_NO_FOCUS` or the empty
+input region actually deliver click-through against a real pointer grab, and
+whether the HUD is visible and non-interfering over the real game. Both
+require a human playing EverQuest under gamescope with
+`--force-grab-cursor` and confirming mouse-look behaves identically with the
+HUD running and not running —**pending JDS300**. The spec's risk table
+(`docs/specs/2026-09-08-spec-1-the-spine.md`) is left unchanged:
+`GAMESCOPE_NO_FOCUS` stays recorded as unproven until that human check
+happens.
+
+### 2026-09-08 — layer-shell overlay backend: stand-in verification
+
+Task 9 (Milestone 2) implemented the `zwlr_layer_shell_v1` overlay backend
+(`crates/wisp-hud/src/backend/layer_shell.rs`), for desktop Wayland sessions
+without gamescope: KDE, Sway, Hyprland, river.
+
+What was actually verified, against the development machine's real KDE
+Plasma / KWin session (`WAYLAND_DISPLAY=wayland-0`, `zwlr_layer_shell_v1`
+version 5), with `wispd --stub` standing in for a real log feed (launching
+EverQuest or Lutris, and synthesising input via `xdotool`/`XTEST`, are
+off-limits on this machine):
+
+- With no daemon running, `wisp-hud --backend layer-shell` attached
+  successfully — past the compositor's first `configure`, since `attach()`
+  blocks on that — and only the subsequent connect to the (absent) wispd
+  socket failed. No panics, no Wayland protocol errors on stderr.
+- With `wispd --stub` running, `wisp-hud --backend layer-shell` ran for a
+  full 10-second `timeout` window with no further stderr output: `attach()`
+  succeeded, the daemon connection succeeded, and `present()` ran repeatedly
+  (once per stub snapshot) without incident.
+- A reviewer finding during Task 9 itself — `present()` never actually read
+  the Wayland socket, so `wl_buffer.release` events went unread and the
+  `SlotPool` grew without bound — was fixed by replacing `flush()` +
+  `dispatch_pending()` with `event_queue.roundtrip(state)`. Proved bounded
+  with a temporary frame counter: `pool.len()` held flat at 256000 bytes
+  (two 400x80 Argb8888 buffers) across a 55-second, ~220-frame run, instead
+  of doubling roughly every frame as it did before the fix.
+- All processes were killed afterward and the socket file removed.
+
+**Not verified, and not attempted:** the actual on-screen appearance over a
+fullscreen game, and click-through/no-focus behaviour during real play. Both
+require a human playing EverQuest through the **no-gamescope** Lutris
+configuration under a real desktop compositor — **pending JDS300**.
+
+### 2026-09-08 — plain-window fallback backend: readback verification, and a decoration defect found and fixed
+
+Task 10 (Milestone 2) implemented the plain-window fallback backend
+(`crates/wisp-hud/src/backend/plain_window.rs`), for sessions with neither
+gamescope nor layer-shell (notably GNOME), sharing the X11 plumbing with the
+gamescope backend via the new `x11_common.rs`.
+
+What was verified at the time, by `xprop`/`xwininfo` readback against a real
+KDE Plasma / KWin XWayland session (`DISPLAY=:0`) with `wispd --stub`:
+`_NET_WM_STATE` carried `_NET_WM_STATE_ABOVE`; `WM_HINTS` showed "Client
+accepts input or input focus: False"; `_NET_WM_WINDOW_TYPE` was
+`_NET_WM_WINDOW_TYPE_UTILITY` as set; `Override Redirect State: no` confirmed
+the window was WM-managed, unlike the gamescope backend. Click-through itself
+was recorded as pending JDS300, since it requires a human click.
+
+**What that verification missed, found by the whole-branch final review:**
+the same readback also showed `_NET_FRAME_EXTENTS(CARDINAL) = 0, 0, 28, 0`
+and `_NET_WM_ALLOWED_ACTIONS` including `_NET_WM_ACTION_MOVE`, `_RESIZE` and
+`_CLOSE` — KWin was decorating the `_NET_WM_WINDOW_TYPE_UTILITY` window with
+a titlebar and frame, and that frame took pointer input the empty XFixes
+input region on the client window could never reach. A direct violation of
+the spec's "not focusable, not clickable, not draggable, not resizable by
+pointer" invariant, missed at Task 10 time because nobody had read
+`_NET_FRAME_EXTENTS` or `_NET_WM_ALLOWED_ACTIONS` specifically — only
+`_NET_WM_STATE` and `WM_HINTS` were checked.
+
+**Fixed in the final-review wave (F1):** switched to
+`_NET_WM_WINDOW_TYPE_DOCK` (undecorated and kept-above by EWMH definition),
+added `_MOTIF_WM_HINTS` (`decorations = 0`) belt-and-braces for window
+managers that decorate DOCK anyway, and added `_NET_WM_STATE_SKIP_TASKBAR`
+and `_NET_WM_STATE_SKIP_PAGER` alongside `_NET_WM_STATE_ABOVE`. Re-verified
+live on the same `DISPLAY=:0` KWin session with `wispd --stub`:
+`_NET_FRAME_EXTENTS` is now absent, `_NET_WM_ALLOWED_ACTIONS` contains only
+`_NET_WM_ACTION_CHANGE_DESKTOP` (no `MOVE`/`RESIZE`/`CLOSE`), and
+`_NET_WM_WINDOW_TYPE` is `_NET_WM_WINDOW_TYPE_DOCK`. Absolute and relative
+window coordinates matched (no reparenting frame offset).
+
+**Still not verified, and not attempted:** actual click-through against a
+real pointer grab — requires a human, as before — **pending JDS300**.
+
+### 2026-09-08 — layer-shell backend: verified live over EverQuest Legends by JDS300
+
+JDS300 played EverQuest Legends on the desktop test rig (KDE Plasma on
+Wayland, NVIDIA, three displays; EverQuest Legends launched through Lutris
+with `gamescope`, `--force-grab-cursor`, borderless 2560x1440 — see
+`docs/plans/2026-09-08-spec-1-the-spine.md`, "Global Constraints — The test
+rig") with `wispd` and `wisp-hud` both running.
+
+The exact launch: `wispd --log <live log>` and `wisp-hud`, from a normal
+desktop terminal, with **no `--backend` flag and no `DISPLAY` override**.
+Automatic backend selection ran against `DISPLAY=:0`, which is KDE's own
+XWayland, not gamescope's — it carries no `GAMESCOPE_*` root properties, so
+selection fell through to the layer-shell check, and KWin advertises
+`zwlr_layer_shell_v1`. JDS300 confirmed the backend by reading `wisp-hud`'s
+stderr: it printed **`WlrLayerShell`**.
+
+In his words: "Loaded up everything, the kill counter is resting on top of
+everquest. No mouse issues and I confirmed its reading the log by killing
+something." He did not set anything with gamescope himself; only `wispd`
+with the log path and `wisp-hud` ran.
+
+What was observed: the layer-shell overlay surface drew the live kill
+counter above the gamescope window hosting the game; mouse-look was
+unaffected while playing under `--force-grab-cursor`; the counter
+incremented in response to an in-game kill. No screen capture was attached.
+
+**What this proves:** the §3 invariant ("the HUD never takes input") holds
+for the `WlrLayerShell` backend against a real pointer grab, on this rig;
+the full live path — log file → `wispd` → socket → `wisp-hud` — works
+end-to-end against the real game, not `wispd --stub`; automatic backend
+selection chooses `WlrLayerShell` on this rig when `wisp-hud` is launched
+from the desktop (`DISPLAY` pointed at KDE's XWayland, not gamescope's).
+
+**Not verified:**
+
+- The `GamescopeX11` backend in-game. It was not the backend that ran here —
+  automatic selection chose `WlrLayerShell` because `wisp-hud` inherited
+  `DISPLAY=:0`, KDE's XWayland. To exercise `GamescopeX11`, `wisp-hud` must
+  be launched with `DISPLAY` pointed at gamescope's own XWayland display
+  (e.g. `DISPLAY=:1`).
+- `GAMESCOPE_NO_FOCUS` click-through — still unproven; the spec's risk table
+  is unchanged by this entry.
+- The spec's Milestone 4 as literally written ("launched without
+  gamescope") — the game was running under gamescope, per the test rig, not
+  without it.
+- Plain-window click-through.
+- The Legion Go S / handheld target.
+
+### 2026-09-08 — gamescope overlay backend: verified in-game by JDS300; Milestone 2 closed
+
+Following the layer-shell entry above, JDS300 exercised the `GamescopeX11`
+backend itself, on the same desktop test rig (see
+`docs/plans/2026-09-08-spec-1-the-spine.md`, "Global Constraints — The test
+rig"), with EverQuest Legends already running under his normal gamescope
+session and `wispd --log <live log>` already running.
+
+`pgrep -a gamescope` showed the session in flight:
+
+```
+gamescope -w 2560 -h 1440 -W 2560 -H 1440 -b --force-grab-cursor -- gamemoderun /usr/bin/umu-run …/EverQuest Legends/LaunchPad.exe
+```
+
+He found gamescope's own XWayland by process, not by guessing a display
+number: `pgrep -a Xwayland` showed `Xwayland :1 -rootless -core -terminate
+…`, and `env DISPLAY=:1 xprop -root` confirmed it as gamescope's, carrying
+`GAMESCOPE_INPUT_COUNTER`, `GAMESCOPE_HDR_OUTPUT_FEEDBACK`,
+`GAMESCOPE_DISPLAY_IS_EXTERNAL`, `GAMESCOPE_VRR_ENABLED`, among others.
+
+He then ran, from `target/release`:
+
+```
+env DISPLAY=:1 ./wisp-hud
+```
+
+stderr, verbatim:
+
+```
+wisp-hud: backend GamescopeX11, scale 48px
+wisp-hud: x11 backend: using a depth-32 ARGB visual
+wisp-hud: connected to /run/user/1000/wisp/wispd.sock
+```
+
+In his words: "seems to overlay just fine while in game. Killed 2 things and
+it updated." Asked whether mouse-look (right-click look, camera turning) was
+identical to playing without the HUD, he answered: "Yes, identical."
+
+**What this proves:** Spec 1 Milestone 2 as written ("a number over
+EverQuest, in JDS300's normal gamescope session") — done. The §3 invariant
+holds for the `GamescopeX11` backend against gamescope's
+`--force-grab-cursor` pointer grab. `GAMESCOPE_NO_FOCUS` together with the
+empty XFixes input region delivers click-through on this rig — the spec's
+§7 first risk row. The two measures were set together, so this evidence does
+not separate which one is doing the work. The depth-32 ARGB visual path is
+the one that actually runs on this rig, not the depth-24 BGRX fallback.
+Automatic backend selection picks `GamescopeX11` when `DISPLAY` points at
+gamescope's own XWayland.
+
+**Not verified:** no screen capture or photograph was attached to this run.
+Plain-window click-through remains as recorded above. The Legion Go S /
+handheld target (Milestone 6) is the same code on different hardware and
+remains open.
+
+**A practical finding worth recording:** on this rig, listing
+`/tmp/.X11-unix/` through a fish loop gave misleading results because the
+user's `ls` alias prints file-type icons, which corrupted the parsed
+display numbers as zeros. `pgrep -a Xwayland` is the reliable way to find
+gamescope's display number, and `env DISPLAY=<n> xprop -root` confirms it by
+its `GAMESCOPE_*` root properties before anything is launched against it.

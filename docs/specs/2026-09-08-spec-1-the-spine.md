@@ -212,7 +212,7 @@ Equality, not approximation. `X has been slain by Y!` must contribute zero.
 
 | Risk | Standing |
 |---|---|
-| **`GAMESCOPE_NO_FOCUS` may not deliver click-through.** The spike proved the atom is *accepted*, never that input passes through. | Unproven. Milestone 2 settles it. If it fails, the fallback is an override-redirect X11 window with an empty input region, which is the conventional approach. |
+| **`GAMESCOPE_NO_FOCUS` may not deliver click-through.** The spike proved the atom is *accepted*, never that input passes through. | **Proven on the desktop rig, 2026-09-08.** With `GAMESCOPE_NO_FOCUS` set and an empty XFixes input region on the window, mouse-look under `--force-grab-cursor` was identical with and without the HUD, and the counter updated live (see PROVENANCE.md). The two measures are set together, so this does not separate them. The handheld (Milestone 6) remains open. |
 | **Text legibility at handheld scale.** A 7" 1920×1080 panel is a different design problem from a 2560×1440 desktop. | Scale must be an explicit parameter from the first frame, never inherited from a desktop default. |
 | **gamescope on NVIDIA is fragile.** A default-backend invocation failed hard here with `vkCreateComputePipelines … VK_ERROR_INVALID_SHADER_NV`; JDS300's flags start cleanly. | Understood, not solved. Pin testing to the known-good invocation and record it. |
 | **Wine prefix paths** contain spaces and vendor names. The reference fixture lives under `.../drive_c/users/Public/Daybreak Game Company/Installed Games/...`. | Path handling must be `OsStr`-clean throughout. No `String` round-trips. |
