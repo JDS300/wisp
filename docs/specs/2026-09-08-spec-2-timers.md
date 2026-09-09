@@ -1,6 +1,6 @@
 # Spec 2 — timers
 
-**Status:** design approved 2026-09-08 (approach A), written spec pending review
+**Status:** design approved 2026-09-08 (approach A); written spec reviewed by JDS300 pending
 **Depends on:** [Spec 1 — the spine](2026-09-08-spec-1-the-spine.md), [Spec 0 — clean-room charter](2026-09-08-clean-room-charter.md)
 **Target client:** EverQuest Legends. Not Live, not Project Quarm.
 
@@ -68,8 +68,8 @@ Two rules are new and binding:
 
 ## 4. Architecture
 
-Everything that decides lives in `wispd`. `wisp-hud` draws rows and
-interpolates a countdown between snapshots. Restarting the HUD loses nothing,
+Everything that decides lives in `wispd`. `wisp-hud` draws rows from the
+latest snapshot and nothing more. Restarting the HUD loses nothing,
 as Spec 1 promises.
 
 ### Spell data — `wispd::spells`
@@ -127,26 +127,34 @@ the charter names; the loader's name index decides — `Togor's Insects VI`
 parses as `Togor's Insects` + 6 only because `Togor's Insects` is an eligible
 name and `Togor's Insects VI` is not.
 
-The player's own name comes from the log filename, `eqlog_<Name>_<server>.txt`.
-It is used for one thing: `has been awakened by <Name>` is still a break.
+**Names are compared case-insensitively.** The log capitalises a mob's
+article at the start of some sentences and not others: `A Pickclaw guard has
+been awakened by Downslap.` but `a jeering gargoyle has been mesmerized.`
+(appendix). A row keys its target by the lower-cased name and displays the
+form the landing line printed.
+
+The player's own name is not needed: `has been awakened by <anyone>` breaks a
+mez whoever did it.
 
 ### The state machine — `wispd::timers`
 
-Pure. Consumes classified lines with an arrival instant; produces the list of
+Pure. Consumes classified lines with their log time; produces the list of
 active timers on demand. Tested exhaustively; this is where correctness lives.
 
 **Pending casts.** `You begin casting` arms a pending cast for that spell,
 replacing any earlier pending cast of the same spell. It lives for
-`cast_ms + 6000 ms` from arrival (one server tick of slack), or 10 s if the
-spell is unknown to the loader. Fizzle, interrupt and resist retire it. Only a
+`ceil(cast_ms / 1000) + 6` seconds of log time (one server tick of slack)
+from the cast line. A spell the loader does not know is never pending. Fizzle, interrupt and resist retire it. Only a
 pending cast can create a timer, so a landing line for someone else's spell
 does nothing.
 
 **Landing.** A landing line whose prose matches a pending cast's `lands_as`,
 or a DoT tick naming a pending spell, converts the pending cast into an
-**active timer** `{ target, spell, rank, armed_at, duration_ms, kind,
+**active timer** `{ target, spell, rank, landed_at, duration_s, kind,
 confidence }`. `kind` is `mez` if `lands_as` is ` has been mesmerized.`,
-`dot` if the spell has ever produced a tick line, else `debuff`. The pending
+`dot` if the row was armed by a tick line, else `debuff`; a `debuff` row
+becomes `dot` on its first tick line (most DoTs print their prose before their
+first tick). The pending
 cast is consumed. Four slows share ` yawns.`; the correlation with the pending
 cast is what makes the row name the right spell.
 
@@ -169,28 +177,35 @@ than hidden.
    been extended by something the log cannot see (JDS300's own prior
    observation, recorded below).
 
-**Re-landing.** A landing on a target that already has a row for the same
-spell refreshes that row rather than adding a second.
+**Re-landing.** A second landing for the same target and spell adds a second
+row; the log cannot say whether it was the same mob re-mezzed or a twin. The
+overwritten row never gets its own wear-off line and retires at its expiry
+hold. In play the overlap is a few seconds; for twins it is correct.
 
 ### Durations — `wispd::durations`
 
 Every timer needs a duration at landing time. Two sources, one rule:
 **measured wins; the seed fills gaps.**
 
-**Seed.** `cap_ticks × 6000 ms × rank_factor`, where
+**Seed.** `round(cap_ticks × 6 × rank_factor)` seconds, where
 `rank_factor = (10 + min(rank, 6)) / 10`. This is what the fixture shows
 (appendix): rank VI matches the charter's 10%-per-rank rule exactly; ranks
 above VI measure at the rank-VI factor, not higher. The seed carries
 `confidence: estimated`.
 
-**Measured.** When a `mez` or `debuff` row ends by its own wear-off line, and
-no break, death or zone change intervened, the interval from the landing
+**Measured.** When a row of any kind ends by its own wear-off line (a break,
+death or zone change retires a row without one), the interval from the landing
 line's timestamp to the wear-off line's timestamp is one **sample** for
 `(spell, rank)`. Whole seconds, from the log's own timestamps. Samples shorter
 than half the seed are discarded as breaks the log did not narrate. The last
 nine samples are kept; the median is the measured duration once three exist,
-and a row armed with it carries `confidence: measured`. `dot` rows learn the
-same way from the wear-off line; the last tick is not a substitute.
+and a row armed with it carries `confidence: measured`. The last tick of a DoT is not a substitute for its
+wear-off line.
+
+The nine-sample window is deliberate: the fixture shows Mesmerization VI
+lasting 37–41 s in the early sessions and 19–28 s in the latest ones, on the
+same character (appendix). Whatever changed — class, level, an upgrade — the
+log cannot say, and a recency window follows it without being told.
 
 Learning runs identically live and under `--from-start`, so replaying an old
 log teaches the daemon before the first live session.
@@ -214,21 +229,29 @@ contract; it is versioned with a top-level `"v": 1`.
 ```
 
 `timers` is sorted by `remaining_ms` ascending and capped at 16 entries; the
-HUD shows at most 8. `remaining_ms` is computed on the daemon's monotonic
-clock at snapshot time and may be negative during the post-expiry hold.
+HUD shows at most 8. `remaining_ms` is computed from the estimated log time
+at snapshot time (see the timing model) and may be negative during the
+post-expiry hold.
 Everything Spec 1 carried is unchanged.
 
 ### Timing model
 
-A row's clock starts at the **arrival** of its landing line: the instant the
-tailer read it, on the daemon's monotonic clock. The tailer polls every
-250 ms, so a row is at most a quarter-second late and never early. Snapshots
-are published at 5 Hz as before; a snapshot is emitted whenever the timer list
-or any counter changed, and at least once a second while any timer is active
-so `remaining_ms` keeps moving.
+The tracker runs on **log time**, in whole seconds: every line carries a
+timestamp, and every state transition — pending-cast windows, landings, holds,
+expiry — is decided against the timestamp of the line being processed. This
+makes a `--from-start` replay of an old log behave exactly as the live session
+did, and makes the acceptance replay deterministic.
 
-Log timestamps are used only for learning (differences within one log). They
-are never mixed with the monotonic clock.
+For display, the daemon estimates the current log time as *the timestamp of
+the most recent line, plus the wall-clock time elapsed since that line
+arrived* (monotonic clock, at most the 250 ms poll late). `remaining_ms` is
+`(expiry − estimated now) × 1000`. Live, this advances smoothly between lines;
+under replay it is simply the last line's time. Precision is one second,
+which is the log's own.
+
+Snapshots are published at the existing 250 ms tick. Log timestamps are never
+mixed with the monotonic clock except in that one estimate, and never
+converted to absolute time.
 
 ### `wisp-hud`
 
@@ -247,9 +270,9 @@ critical colour at ≤ 5 s** — Wisp's own thresholds, constants in one place.
 An `estimated` row draws its seconds in a dimmer shade than a `measured`
 one, so the player can see which countdowns the daemon has verified.
 
-Between snapshots the HUD decrements each row's `remaining_ms` by its own
-elapsed monotonic time, so a 5 Hz feed produces a smooth countdown; a new
-snapshot resets the value. The overlay window is sized at attach for the kill
+The HUD draws what the latest snapshot says and nothing more: at four
+snapshots a second and a one-second display resolution there is nothing to
+interpolate. The overlay window is sized at attach for the kill
 line plus 8 rows at the chosen scale, on every backend. Nothing else in the
 renderer changes.
 
@@ -282,16 +305,31 @@ Exact, not impressionistic.
 | `Pacify` | id `45`, cap `7` ticks, beneficial, lands as ` looks less aggressive.`, eligible via the lull rule |
 | `Togor's Insects` | id `507`, cap `35` ticks, detrimental, lands as ` yawns.` |
 
-**Replay**, against `eqlog_Daggo_freeport.txt` with `--from-start` and the
-real client files: the daemon's final counters for timers armed, ended by
-wear-off, ended by awaken, ended by death, and cleared by zone change must
-**equal** the numbers produced by an independent script written in the plan
-from the rules in §4. The plan derives and records those numbers before the
-state machine is implemented, so the implementation is checked against a
-number it did not produce.
+**Replay**, against the **frozen fixture** and the real client files. The
+live log grows while JDS300 plays, so the fixture is its first 1,440,036 lines
+frozen on 2026-09-08 at
+`/mnt/Data4TB/Games/everquest/fixtures/eqlog_Daggo_freeport.1440036.txt`
+(SHA-256 begins `70a95ca40bc701cf`; Spec 1's counts hold on it). The tracker's
+final counters must **equal** the numbers below, produced by an independent
+reference implementation of §4 (recorded in the plan) before any Rust was
+written, so the implementation is checked against numbers it did not produce.
 
-The measured duration the replay learns for `("Mesmerization", 6)` must lie in
-`[37, 41]` seconds, the fixture's natural-expiry cluster.
+| Counter | Expected |
+|---|---|
+| eligible spells loaded | `12245` |
+| pending casts armed / cancelled / expired | `8042` / `730` / `399` |
+| timers armed: total / mez / dot / debuff | `5972` / `822` / `214` / `4936` |
+| rows promoted debuff→dot on first tick | `2097` |
+| tick heartbeats on active rows | `12814` |
+| ended by wear-off / awaken / death / expiry hold | `1660` / `19` / `2042` / `2107` |
+| rows cleared by zone change | `144` |
+| samples recorded / discarded as short | `1060` / `600` |
+| active rows and pending casts at end of file | `0` / `0` |
+
+Learned durations at end of replay (median of the last nine samples):
+`Mesmerization|6` = `24` (samples `22 27 21 27 19 28 24 22 28`),
+`Pacify|5` = `69`, `Venom of the Snake|0` = `38`, `Envenomed Bolt|10` = `57`,
+`Odium|10` = `50`.
 
 **Live.**
 
@@ -301,7 +339,7 @@ The measured duration the replay learns for `("Mesmerization", 6)` must lie in
 - Killing a mob removes its rows.
 - Zoning clears the list.
 - Killing and restarting `wisp-hud` mid-fight shows the same rows with the same
-  remaining time, within the 250 ms poll.
+  remaining time, within one second.
 - The HUD still never takes focus or input on any backend.
 
 ---
@@ -348,7 +386,21 @@ another parser.
 **Wear-off lines strip the rank.** Cast: `You begin casting Mesmerization VI.`
 Wear-off: `Your Mesmerization spell has worn off of a jeering gargoyle.`
 
-**Measured natural expiry, landing to wear-off, same target, whole seconds.**
+**Article capitalisation depends on the sentence.** In the fixture, ` has
+been awakened by ` (534 of 775), ` has taken N damage from your ` (all 9,261
+with an article) and ` has been slain by ` (all 1,893) print `A …`; ` has
+been mesmerized.` (all 1,971), ` yawns.` (all 349), `spell has worn off of `
+(all 2,009) and `You have slain ` (all 2,936) print `a …`. Hence
+case-insensitive target keys.
+
+**Duration drift on one character.** Pairing landings to wear-offs by the §4
+rules, Mesmerization VI's natural expiries cluster at 37–45 s in the August 10
+sessions and at 19–28 s in the latest sessions of the fixture; the last nine
+samples give a median of 24 s. The seed rule would say 38 s. Learning with a
+recency window is what makes the countdown right in both periods.
+
+**Measured natural expiry, landing to wear-off, same target, whole seconds
+(August 10 sessions).**
 
 | Spell, rank | Client cap | Seed by the §4 rule | Measured cluster |
 |---|---|---|---|
