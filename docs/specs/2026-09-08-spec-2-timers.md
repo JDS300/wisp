@@ -93,10 +93,13 @@ lands_as: Option<String> }` per spell name that is **eligible**:
 - `detrimental`, **or** `lands_as == " looks less aggressive."` (the lull
   family: beneficial in the data, cast on mobs in practice).
 
-Names are unique across eligible rows on the current client; if two rows share
-a name, the lower id wins and the loader logs it once. Ranks are not rows in
-this file: the log prints `Mesmerization VI`, the data has one `Mesmerization`.
-The loader is indexed by base name; rank is parsed off the log line.
+Names are **not** unique across eligible rows on the current client: 706 of
+them collide (appear on more than one eligible row), 304 of those with
+differing capitalisation. When two rows share a name, the lower id wins;
+the loader counts the collisions and reports the total once, at startup.
+Ranks are not rows in this file: the log prints `Mesmerization VI`, the data
+has one `Mesmerization`. The loader is indexed by base name; rank is parsed
+off the log line.
 
 The loader is pure over its two inputs and is tested with hand-written rows.
 Against the real client it is verified by count and by three known rows (see

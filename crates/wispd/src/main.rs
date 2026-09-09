@@ -63,9 +63,10 @@ fn main() -> std::io::Result<()> {
                         let store_path = durations::DurationStore::default_path();
                         let store = durations::DurationStore::load(&store_path);
                         eprintln!(
-                            "wispd: {} eligible spells from {}; durations in {}",
+                            "wispd: {} eligible spells from {} ({} names shared by more than one row; lowest id wins); durations in {}",
                             table.len(),
                             dir.display(),
+                            table.collisions(),
                             store_path.display()
                         );
                         Some(timers::Tracker::new(table, store))

@@ -8,7 +8,7 @@
 //! is documented by `amerzel/eql-info` (MIT, see THIRD_PARTY.md) and was
 //! confirmed against the local files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -64,6 +64,10 @@ impl std::error::Error for SpellsError {}
 #[derive(Debug)]
 pub struct SpellTable {
     by_name: HashMap<String, SpellInfo>,
+    /// Eligible names seen on more than one row, counted once per name (not
+    /// once per extra row). Names are not unique in the client data; the
+    /// lowest id wins each collision.
+    collisions: usize,
     #[cfg(test)]
     rows_parsed: usize,
 }
@@ -91,6 +95,8 @@ impl SpellTable {
         }
 
         let mut by_name: HashMap<String, SpellInfo> = HashMap::new();
+        let mut collided_names: HashSet<String> = HashSet::new();
+        let mut collisions = 0usize;
         #[cfg(test)]
         let mut rows_parsed = 0usize;
         for (i, line) in spells.lines().enumerate() {
@@ -125,14 +131,24 @@ impl SpellTable {
             let name = f[F_NAME].to_string();
             let info = SpellInfo { id, name: name.clone(), cast_ms, cap_ticks, detrimental, lands_as };
             match by_name.get(&name) {
-                Some(existing) if existing.id <= id => {}
-                _ => {
+                Some(existing) => {
+                    // Names are not unique across eligible rows. Counted
+                    // once per name, however many extra rows share it.
+                    if collided_names.insert(name.clone()) {
+                        collisions += 1;
+                    }
+                    if existing.id > id {
+                        by_name.insert(name, info);
+                    }
+                }
+                None => {
                     by_name.insert(name, info);
                 }
             }
         }
         Ok(SpellTable {
             by_name,
+            collisions,
             #[cfg(test)]
             rows_parsed,
         })
@@ -157,6 +173,12 @@ impl SpellTable {
 
     pub fn len(&self) -> usize {
         self.by_name.len()
+    }
+
+    /// Eligible names that appeared on more than one row, counted once per
+    /// name. Names are not unique in the client data; the lowest id wins.
+    pub fn collisions(&self) -> usize {
+        self.collisions
     }
 
     #[cfg(test)]
@@ -281,6 +303,14 @@ mod tests {
     }
 
     #[test]
+    fn a_duplicate_name_among_eligible_rows_is_one_collision() {
+        // spells_text() has two "Sleep" rows (ids 1 and 5): one collision,
+        // counted once regardless of how many extra rows share the name.
+        let t = SpellTable::parse(&spells_text(), &strings_text()).unwrap();
+        assert_eq!(t.collisions(), 1);
+    }
+
+    #[test]
     fn buffs_and_instant_spells_are_not_eligible() {
         let t = SpellTable::parse(&spells_text(), &strings_text()).unwrap();
         assert!(t.get("Ward").is_none(), "beneficial, not a lull");
@@ -332,6 +362,7 @@ mod tests {
         let t = SpellTable::load(Path::new(&dir)).expect("real client files load");
         assert_eq!(t.rows_parsed(), 73975);
         assert_eq!(t.len(), 12245);
+        assert_eq!(t.collisions(), 706, "names shared by more than one eligible row");
         let mez = t.get("Mesmerization").unwrap();
         assert_eq!((mez.id, mez.cast_ms, mez.cap_ticks, mez.detrimental), (307, 3000, 4.0, true));
         assert_eq!(mez.lands_as.as_deref(), Some(MEZ_PROSE));
