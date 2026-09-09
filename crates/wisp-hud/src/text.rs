@@ -15,6 +15,15 @@ pub struct Renderer {
     scale_px: f32,
 }
 
+/// Vertical gap between stacked lines, in pixels.
+pub const LINE_GAP_PX: u32 = 4;
+
+/// One row of text and the colour to draw it in (straight, not premultiplied).
+pub struct Line {
+    pub text: String,
+    pub rgb: [u8; 3],
+}
+
 impl Renderer {
     /// `scale_px` is explicit and has no default. A 7-inch handheld panel and a
     /// 2560x1440 desktop are different legibility problems.
@@ -24,7 +33,38 @@ impl Renderer {
         Renderer { font, scale_px }
     }
 
+    // main.rs now draws everything through `render_lines`, but `render` stays
+    // as the crate's single-line, white-text entry point (exercised by the
+    // text tests below), so it is not dead API even though nothing in the
+    // current binary calls it.
+    #[allow(dead_code)]
     pub fn render(&self, text: &str) -> Frame {
+        self.render_one(text, [255, 255, 255])
+    }
+
+    /// Stack lines top to bottom, `LINE_GAP_PX` apart, left-aligned, the
+    /// canvas as wide as the widest line.
+    pub fn render_lines(&self, lines: &[Line]) -> Frame {
+        let frames: Vec<Frame> = lines.iter().map(|l| self.render_one(&l.text, l.rgb)).collect();
+        if frames.is_empty() {
+            return Frame { width: 0, height: 0, rgba: Vec::new() };
+        }
+        let width = frames.iter().map(|f| f.width).max().unwrap_or(0);
+        let height: u32 = frames.iter().map(|f| f.height).sum::<u32>() + LINE_GAP_PX * (frames.len() as u32 - 1);
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let mut y0 = 0u32;
+        for f in &frames {
+            for y in 0..f.height {
+                let src = ((y * f.width) * 4) as usize;
+                let dst = (((y0 + y) * width) * 4) as usize;
+                rgba[dst..dst + (f.width * 4) as usize].copy_from_slice(&f.rgba[src..src + (f.width * 4) as usize]);
+            }
+            y0 += f.height + LINE_GAP_PX;
+        }
+        Frame { width, height, rgba }
+    }
+
+    fn render_one(&self, text: &str, rgb: [u8; 3]) -> Frame {
         if text.is_empty() {
             return Frame { width: 0, height: 0, rgba: Vec::new() };
         }
@@ -76,10 +116,10 @@ impl Renderer {
                         continue;
                     }
                     let o = ((y as u32 * width + x as u32) * 4) as usize;
-                    // Premultiplied white. X11 and Wayland both want premultiplied alpha.
-                    rgba[o] = coverage;
-                    rgba[o + 1] = coverage;
-                    rgba[o + 2] = coverage;
+                    // Premultiplied colour. X11 and Wayland both want premultiplied alpha.
+                    rgba[o] = (rgb[0] as u32 * coverage as u32 / 255) as u8;
+                    rgba[o + 1] = (rgb[1] as u32 * coverage as u32 / 255) as u8;
+                    rgba[o + 2] = (rgb[2] as u32 * coverage as u32 / 255) as u8;
                     rgba[o + 3] = coverage;
                 }
             }
@@ -150,5 +190,42 @@ mod tests {
             lit, expected,
             "some of the glyph's coverage bytes were dropped by the canvas bounds check"
         );
+    }
+
+    #[test]
+    fn lines_stack_vertically_and_take_the_widest_width() {
+        let r = Renderer::new(32.0);
+        let long = r.render("1234");
+        let short = r.render("12");
+        let frame = r.render_lines(&[
+            Line { text: "12".to_string(), rgb: [255, 255, 255] },
+            Line { text: "1234".to_string(), rgb: [255, 255, 255] },
+        ]);
+        assert_eq!(frame.width, long.width, "as wide as the widest line");
+        // Heights are per line: '3' has a one-pixel descender that '1' and '2' lack.
+        assert_eq!(frame.height, short.height + long.height + LINE_GAP_PX);
+        assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+    }
+
+    #[test]
+    fn a_coloured_line_is_premultiplied_by_coverage() {
+        let r = Renderer::new(32.0);
+        let frame = r.render_lines(&[Line { text: "8".to_string(), rgb: [255, 0, 0] }]);
+        let max_px = frame
+            .rgba
+            .chunks_exact(4)
+            .max_by_key(|px| px[3])
+            .unwrap();
+        assert!(max_px[3] > 200, "a fully covered pixel exists");
+        assert_eq!(max_px[0], max_px[3], "red channel equals alpha (premultiplied)");
+        assert_eq!(max_px[1], 0);
+        assert_eq!(max_px[2], 0);
+        assert!(frame.rgba.chunks_exact(4).all(|px| px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3]));
+    }
+
+    #[test]
+    fn an_empty_line_list_is_an_empty_frame() {
+        let frame = Renderer::new(32.0).render_lines(&[]);
+        assert_eq!((frame.width, frame.height), (0, 0));
     }
 }

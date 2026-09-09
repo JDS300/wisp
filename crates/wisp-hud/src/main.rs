@@ -55,11 +55,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let renderer = text::Renderer::new(scale);
 
-    // Size the window from the renderer instead of a hardcoded guess: render
-    // a worst-case probe string once and pad it, so the window is exactly as
-    // big as the HUD can ever need to be at this scale and no bigger.
+    // Size the window from the renderer: the kill line plus MAX_ROWS timer
+    // rows at their widest, padded, so the HUD never clips at this scale.
     const PAD: u32 = 8;
-    let probe = renderer.render("999999 kills");
+    let widest = std::iter::once(text::Line { text: "999999 kills".to_string(), rgb: WHITE })
+        .chain((0..MAX_ROWS).map(|_| text::Line { text: format_row("W".repeat(TARGET_COLS).as_str(), &"W".repeat(SPELL_COLS), 9999), rgb: WHITE }))
+        .collect::<Vec<_>>();
+    let probe = renderer.render_lines(&widest);
     let (w, h) = (probe.width + 2 * PAD, probe.height + 2 * PAD);
 
     let mut surface: Box<dyn OverlayBackend> = match kind {
@@ -78,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(item) = stream.next_snapshot() {
         match item {
             Ok(snap) => {
-                let frame = renderer.render(&format!("{} kills", snap.session_kills));
+                let frame = renderer.render_lines(&hud_lines(&snap));
                 if let Err(e) = surface.present(&frame) {
                     eprintln!("wisp-hud: {e}");
                     std::process::exit(1);
@@ -97,4 +99,111 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("wisp-hud: daemon closed the connection");
     }
     Ok(())
+}
+
+use wisp_proto::{Confidence, Snapshot, Timer};
+
+/// Wisp's own presentation thresholds. Not derived from anything.
+const WARNING_SECS: i64 = 10;
+const CRITICAL_SECS: i64 = 5;
+const MAX_ROWS: usize = 8;
+const TARGET_COLS: usize = 20;
+const SPELL_COLS: usize = 18;
+
+const WHITE: [u8; 3] = [255, 255, 255];
+const DIM: [u8; 3] = [170, 170, 170];
+const WARNING: [u8; 3] = [255, 200, 0];
+const CRITICAL: [u8; 3] = [255, 70, 70];
+
+fn roman(rank: u8) -> &'static str {
+    ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
+        .get(rank as usize)
+        .copied()
+        .unwrap_or("")
+}
+
+/// Truncate to `cols` characters, padding on the right so columns line up
+/// in the monospace face.
+fn fit(s: &str, cols: usize) -> String {
+    let mut out: String = s.chars().take(cols).collect();
+    while out.chars().count() < cols {
+        out.push(' ');
+    }
+    out
+}
+
+fn format_row(target: &str, spell: &str, secs: i64) -> String {
+    format!("{} {} {:>4}", fit(target, TARGET_COLS), fit(spell, SPELL_COLS), secs)
+}
+
+fn row_colour(t: &Timer) -> [u8; 3] {
+    let secs = t.remaining_ms.div_euclid(1000);
+    if secs <= CRITICAL_SECS {
+        CRITICAL
+    } else if secs <= WARNING_SECS {
+        WARNING
+    } else if t.confidence == Confidence::Estimated {
+        DIM
+    } else {
+        WHITE
+    }
+}
+
+/// The kill count, then at most MAX_ROWS timers as the daemon ordered them.
+fn hud_lines(snap: &Snapshot) -> Vec<text::Line> {
+    let mut lines = vec![text::Line { text: format!("{} kills", snap.session_kills), rgb: WHITE }];
+    for t in snap.timers.iter().take(MAX_ROWS) {
+        let spell = if t.rank == 0 { t.spell.clone() } else { format!("{} {}", t.spell, roman(t.rank)) };
+        let secs = t.remaining_ms.div_euclid(1000).max(0);
+        lines.push(text::Line { text: format_row(&t.target, &spell, secs), rgb: row_colour(t) });
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wisp_proto::TimerKind;
+
+    fn timer(remaining_ms: i64, confidence: Confidence) -> Timer {
+        Timer {
+            target: "a jeering gargoyle".to_string(),
+            spell: "Mesmerization".to_string(),
+            rank: 6,
+            kind: TimerKind::Mez,
+            remaining_ms,
+            duration_ms: 38_000,
+            confidence,
+        }
+    }
+
+    #[test]
+    fn colour_follows_the_thresholds_and_confidence() {
+        assert_eq!(row_colour(&timer(30_000, Confidence::Measured)), WHITE);
+        assert_eq!(row_colour(&timer(30_000, Confidence::Estimated)), DIM);
+        assert_eq!(row_colour(&timer(10_000, Confidence::Measured)), WARNING);
+        assert_eq!(row_colour(&timer(5_999, Confidence::Measured)), CRITICAL);
+        assert_eq!(row_colour(&timer(-2_000, Confidence::Measured)), CRITICAL);
+    }
+
+    #[test]
+    fn rows_are_fixed_width_and_the_rank_is_roman() {
+        let snap = Snapshot {
+            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
+            timers: vec![timer(11_800, Confidence::Measured)],
+        };
+        let lines = hud_lines(&snap);
+        assert_eq!(lines[0].text, "7 kills");
+        assert_eq!(lines[1].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 11));
+        assert_eq!(fit("a very long mob name indeed", 20).chars().count(), 20);
+    }
+
+    #[test]
+    fn at_most_eight_rows_are_drawn() {
+        let snap = Snapshot {
+            v: 2, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 0,
+            timers: (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect(),
+        };
+        assert_eq!(hud_lines(&snap).len(), 1 + MAX_ROWS);
+    }
 }
