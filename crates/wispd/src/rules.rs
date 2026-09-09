@@ -14,7 +14,7 @@ pub fn timestamp_text(line: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-fn body(line: &str) -> &str {
+pub fn body(line: &str) -> &str {
     match line.find("] ") {
         Some(i) => &line[i + 2..],
         None => line,
@@ -45,6 +45,150 @@ pub fn own_kill(line: &str) -> bool {
 /// generalising between clients.
 pub fn session_boundary(line: &str) -> bool {
     body(line) == "Welcome to EverQuest Legends!"
+}
+
+/// Rank numerals the log appends to an upgraded spell: `Mesmerization VI`.
+const ROMAN: [(&str, u8); 10] = [
+    ("I", 1), ("II", 2), ("III", 3), ("IV", 4), ("V", 5),
+    ("VI", 6), ("VII", 7), ("VIII", 8), ("IX", 9), ("X", 10),
+];
+
+/// `Mesmerization VI` -> (`Mesmerization`, 6); `Venom of the Snake` -> (…, 0).
+///
+/// A trailing numeral is a rank only if what precedes it is a known spell;
+/// the client data has one row per spell and no row for `Mesmerization VI`.
+/// Names that legitimately end in numeral letters are the charter's trap,
+/// and the table -- not this function -- decides them.
+pub fn split_rank(text: &str, known: impl Fn(&str) -> bool) -> Option<(&str, u8)> {
+    if known(text) {
+        return Some((text, 0));
+    }
+    let (base, tail) = text.rsplit_once(' ')?;
+    let rank = ROMAN.iter().find(|(r, _)| *r == tail).map(|(_, n)| *n)?;
+    if known(base) {
+        Some((base, rank))
+    } else {
+        None
+    }
+}
+
+/// `Mon Aug 10 20:39:54 2026` -> seconds on an arbitrary naive scale.
+///
+/// Only differences between two values from the same log are meaningful.
+/// No zone is applied and none is implied: EverQuest writes local wall
+/// clock, and Wisp subtracts rather than relabels (spec §3).
+pub fn parse_log_time(ts: &str) -> Option<i64> {
+    let mut parts = ts.split_whitespace();
+    let _weekday = parts.next()?;
+    let month = match parts.next()? {
+        "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
+        "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+        _ => return None,
+    };
+    let day: u32 = parts.next()?.parse().ok()?;
+    let mut hms = parts.next()?.split(':');
+    let h: i64 = hms.next()?.parse().ok()?;
+    let m: i64 = hms.next()?.parse().ok()?;
+    let s: i64 = hms.next()?.parse().ok()?;
+    if hms.next().is_some() {
+        return None;
+    }
+    let year: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + s)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date. Howard Hinnant's
+/// algorithm; pure integer arithmetic, no calendar library.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// What one log line means to the timer state machine. Borrowed from the
+/// line's body; `Other` carries the body for prose-landing matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event<'a> {
+    CastBegin { spell_text: &'a str },
+    Fizzle { spell: &'a str },
+    Interrupted { spell: &'a str },
+    Resisted { target: &'a str, spell: &'a str },
+    DotTick { target: &'a str, spell: &'a str },
+    WornOff { spell: &'a str, target: &'a str },
+    Awakened { target: &'a str },
+    Slain { target: &'a str },
+    ZoneChange,
+    Other(&'a str),
+}
+
+/// Classify a line body (timestamp already stripped). Every shape here was
+/// read from the reference fixture; none is inferred from another client.
+pub fn classify(body: &str) -> Event<'_> {
+    if let Some(rest) = body.strip_prefix("You begin casting ") {
+        if let Some(spell_text) = rest.strip_suffix('.') {
+            return Event::CastBegin { spell_text };
+        }
+    }
+    if let Some(rest) = body.strip_prefix("Your ") {
+        if let Some(spell) = rest.strip_suffix(" spell fizzles!") {
+            return Event::Fizzle { spell };
+        }
+        if let Some(spell) = rest.strip_suffix(" spell is interrupted.") {
+            return Event::Interrupted { spell };
+        }
+        if let Some((spell, target)) = rest
+            .strip_suffix('.')
+            .and_then(|r| r.split_once(" spell has worn off of "))
+        {
+            return Event::WornOff { spell, target };
+        }
+    }
+    if let Some((target, spell)) = body
+        .strip_suffix('!')
+        .and_then(|r| r.split_once(" resisted your "))
+    {
+        return Event::Resisted { target, spell };
+    }
+    if let Some((target, rest)) = body
+        .strip_suffix('.')
+        .and_then(|r| r.split_once(" has taken "))
+    {
+        if let Some((n, spell)) = rest.split_once(" damage from your ") {
+            if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) {
+                return Event::DotTick { target, spell };
+            }
+        }
+    }
+    if let Some((target, _who)) = body
+        .strip_suffix('.')
+        .and_then(|r| r.split_once(" has been awakened by "))
+    {
+        return Event::Awakened { target };
+    }
+    if let Some(rest) = body.strip_prefix("You have slain ") {
+        if let Some(target) = rest.strip_suffix('!') {
+            if !target.is_empty() {
+                return Event::Slain { target };
+            }
+        }
+    }
+    if let Some((target, _who)) = body
+        .strip_suffix('!')
+        .and_then(|r| r.split_once(" has been slain by "))
+    {
+        return Event::Slain { target };
+    }
+    if body.starts_with("You have entered ") || body.starts_with("LOADING, PLEASE WAIT") {
+        return Event::ZoneChange;
+    }
+    Event::Other(body)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -149,5 +293,55 @@ mod tests {
         let mut c = Counters::default();
         c.apply(OWN);
         assert_eq!(c.last_ts, "Mon Aug 10 20:39:54 2026");
+    }
+
+    fn known(name: &str) -> bool {
+        matches!(name, "Mesmerization" | "Togor's Insects" | "Venom of the Snake")
+    }
+
+    #[test]
+    fn a_trailing_numeral_is_a_rank_only_when_the_base_name_is_known() {
+        assert_eq!(split_rank("Mesmerization VI", known), Some(("Mesmerization", 6)));
+        assert_eq!(split_rank("Togor's Insects X", known), Some(("Togor's Insects", 10)));
+        assert_eq!(split_rank("Venom of the Snake", known), Some(("Venom of the Snake", 0)));
+        assert_eq!(split_rank("Illusion: Human", known), None, "unknown spell");
+        assert_eq!(split_rank("Mesmerization XI", known), None, "XI is not a rank we parse");
+    }
+
+    #[test]
+    fn log_time_differences_are_exact() {
+        let a = parse_log_time("Mon Aug 10 20:39:54 2026").unwrap();
+        let b = parse_log_time("Mon Aug 10 20:40:32 2026").unwrap();
+        assert_eq!(b - a, 38);
+        let c = parse_log_time("Tue Aug 11 00:00:00 2026").unwrap();
+        assert_eq!(c - a, 3 * 3600 + 20 * 60 + 6);
+        let y = parse_log_time("Fri Jan  1 00:00:00 2027").unwrap();
+        let x = parse_log_time("Thu Dec 31 23:59:59 2026").unwrap();
+        assert_eq!(y - x, 1);
+        assert_eq!(parse_log_time("not a time"), None);
+        assert_eq!(parse_log_time("Mon Aug 10 20:39 2026"), None);
+    }
+
+    #[test]
+    fn timer_events_classify_from_fixture_lines() {
+        assert_eq!(classify("You begin casting Mesmerization VI."), Event::CastBegin { spell_text: "Mesmerization VI" });
+        assert_eq!(classify("Your Shiftless Deeds spell fizzles!"), Event::Fizzle { spell: "Shiftless Deeds" });
+        assert_eq!(classify("Your Mesmerization spell is interrupted."), Event::Interrupted { spell: "Mesmerization" });
+        assert_eq!(classify("A spite golem resisted your Earthquake!"), Event::Resisted { target: "A spite golem", spell: "Earthquake" });
+        assert_eq!(classify("Xicotl has taken 88 damage from your Gasping Embrace."), Event::DotTick { target: "Xicotl", spell: "Gasping Embrace" });
+        assert_eq!(classify("Your Mesmerization spell has worn off of a flouting gargoyle."), Event::WornOff { spell: "Mesmerization", target: "a flouting gargoyle" });
+        assert_eq!(classify("A Pickclaw guard has been awakened by Downslap."), Event::Awakened { target: "A Pickclaw guard" });
+        assert_eq!(classify("You have slain a spiderling!"), Event::Slain { target: "a spiderling" });
+        assert_eq!(classify("Zantetsu has been slain by Guard Wytiffin!"), Event::Slain { target: "Zantetsu" });
+        assert_eq!(classify("You have entered The Northern Desert of Ro."), Event::ZoneChange);
+        assert_eq!(classify("LOADING, PLEASE WAIT..."), Event::ZoneChange);
+        assert_eq!(classify("a jeering gargoyle has been mesmerized."), Event::Other("a jeering gargoyle has been mesmerized."));
+        assert_eq!(classify("A large rat bites YOU for 4 points of damage."), Event::Other("A large rat bites YOU for 4 points of damage."));
+    }
+
+    #[test]
+    fn body_strips_the_timestamp() {
+        assert_eq!(body("[Mon Aug 10 20:39:54 2026] You begin casting Pacify V."), "You begin casting Pacify V.");
+        assert_eq!(body("no bracket"), "no bracket");
     }
 }

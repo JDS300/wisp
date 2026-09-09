@@ -9,7 +9,41 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped whenever the snapshot shape changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 1: Spec 1 counters. 2: Spec 2 adds `timers`.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimerKind {
+    Mez,
+    Dot,
+    Debuff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// Duration is the median of measured cast-to-fade intervals.
+    Measured,
+    /// Duration is seeded from the client's cap and the rank; not yet observed.
+    Estimated,
+}
+
+/// One active countdown on a mob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timer {
+    /// The target as the landing line printed it, e.g. `a jeering gargoyle`.
+    pub target: String,
+    /// Base spell name without rank, as the client data names it.
+    pub spell: String,
+    /// 0 when the cast line carried no numeral.
+    pub rank: u8,
+    pub kind: TimerKind,
+    /// May be negative during the post-expiry hold.
+    pub remaining_ms: i64,
+    pub duration_ms: u64,
+    pub confidence: Confidence,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -22,6 +56,9 @@ pub struct Snapshot {
     pub ts: String,
     pub lines_ingested: u64,
     pub session_kills: u64,
+    /// Active timers, soonest expiry first, at most 16. Absent on v1 lines.
+    #[serde(default)]
+    pub timers: Vec<Timer>,
 }
 
 #[derive(Debug)]
@@ -81,6 +118,44 @@ mod tests {
             ts: "Mon Aug 10 20:39:54 2026".to_string(),
             lines_ingested: 10432,
             session_kills: 7,
+            timers: Vec::new(),
+        }
+    }
+
+    fn mez() -> Timer {
+        Timer {
+            target: "a jeering gargoyle".to_string(),
+            spell: "Mesmerization".to_string(),
+            rank: 6,
+            kind: TimerKind::Mez,
+            remaining_ms: 11_800,
+            duration_ms: 38_000,
+            confidence: Confidence::Measured,
+        }
+    }
+
+    #[test]
+    fn timers_round_trip() {
+        let mut s = sample();
+        s.timers = vec![mez()];
+        let decoded = decode(&encode(&s)).unwrap();
+        assert_eq!(decoded, s);
+        assert_eq!(decoded.timers[0].kind, TimerKind::Mez);
+    }
+
+    #[test]
+    fn timer_kinds_and_confidence_serialise_lowercase() {
+        let line = encode(&Snapshot { timers: vec![mez()], ..sample() });
+        assert!(line.contains(r#""kind":"mez""#), "{line}");
+        assert!(line.contains(r#""confidence":"measured""#), "{line}");
+    }
+
+    #[test]
+    fn a_v1_line_is_refused_by_version_not_by_shape() {
+        let v1 = r#"{"v":1,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0}"#;
+        match decode(v1) {
+            Err(ProtoError::Version { found: 1, expected: 2 }) => {}
+            other => panic!("expected a version error, got {other:?}"),
         }
     }
 

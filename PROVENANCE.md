@@ -455,3 +455,97 @@ user's `ls` alias prints file-type icons, which corrupted the parsed
 display numbers as zeros. `pgrep -a Xwayland` is the reliable way to find
 gamescope's display number, and `env DISPLAY=<n> xprop -root` confirms it by
 its `GAMESCOPE_*` root properties before anything is launched against it.
+
+### 2026-09-08 — Spec 2 design: sources consulted
+
+Spec 2 (timers) was designed from primary sources, with two recorded
+consultations:
+
+- **JDS300's own `loremaster/debuff_timer.py` (Tier B) and
+  `debuff_spell_reference.json` (Tier A)** — behaviour and data only. Two
+  behaviours carried into the spec: a prose landing is accepted only while a
+  compatible local cast is pending, because slow/resist prose names the target
+  and not the spell and prints for other casters too; and a DoT still ticking
+  past its computed expiry is held open. The scraped duration table was read
+  to compare against the client data and is **not** used by Wisp: the client's
+  own `spells_us.txt` supersedes it. No code, structure or naming moved.
+- **`amerzel/eql-info` (MIT)** — `SPELL_FORMAT.md` was read for the field
+  layout of `spells_us.txt` / `spells_us_str.txt` and recorded in
+  `THIRD_PARTY.md`. Its `spells.json` was fetched once to confirm the
+  `Mesmerization` row (id 307, cap 4) matched the local file, then discarded.
+  Wisp does not use that project's data, parser or site.
+- **Upstream `mez_timer.py` (Tier C)** was not consulted. Mez behaviour comes
+  from the fixture: ` has been mesmerized.`, ` has been awakened by `, and the
+  measured 37–41 s natural expiry for Mesmerization VI.
+
+Primary sources: the reference fixture and the EverQuest Legends client files
+in JDS300's install (`spells_us.txt`, 73,975 rows; `spells_us_str.txt`). The
+measurements in the spec's appendix were produced by throwaway scripts over
+the fixture on this date and are not kept.
+
+### 2026-09-08 — Spec 2 final-review fix wave: appendix counts corrected, name collisions disclosed
+
+The whole-branch review of `spec-2-timers` found two of Spec 2's own claims
+wrong against its own primary sources:
+
+- **The appendix line-count tables were measured on the live, still-growing
+  log, not the frozen fixture** (`eqlog_Daggo_freeport.1440036.txt`) the spec
+  names as its source. Re-measured every row on the frozen fixture with
+  `grep -cF`; several counts moved (e.g. `You begin casting` 17,286 →
+  17,131; DoT ticks 22,148 → 21,660; see the spec and plan appendices for
+  the full corrected tables). The mesmerized/awakened/charmed/slain counts,
+  already measured from the fixture, were unaffected.
+- **Spell names are not unique across eligible rows of `spells_us.txt`**, contrary
+  to the spec's original claim. Measured directly against the client file:
+  **706** eligible names collide (appear on more than one row), 304 of those
+  with differing capitalisation. The loader already resolved this correctly
+  (lowest id wins) but logged nothing; it now counts and reports the total
+  once at startup, and the spec text is corrected.
+
+No new sources were consulted; both corrections came from re-measuring the
+same primary sources (the frozen fixture and the local client files) already
+on record above.
+
+### 2026-09-08 — Spec 2 timers: verified live over EverQuest Legends by JDS300 (Milestone 4)
+
+JDS300 played EverQuest Legends on the desktop test rig (gamescope, with
+`--force-grab-cursor`, as in Spec 1 — see `docs/plans/2026-09-08-spec-1-the-spine.md`,
+"Global Constraints — The test rig"), running `wispd --log <live log>` and
+`wisp-hud` from the `spec-2-timers` branch.
+
+In his words: "tested and the timer for mez shows up, changes color at 10, 3
+and cleared." Asked when the row turned to the critical colour, he answered:
+"About 5 s, as coded."
+
+What was observed: a mez cast in play produced a row on the landing line; the
+row turned to the warning colour at 10 s remaining and the critical colour at
+about 5 s remaining, matching the thresholds coded in §4; the row cleared at
+expiry. The HUD took no input throughout — he played normally.
+
+**What this proves:** Spec 2 Milestone 4 as written ("a mez in play: row
+appears on landing, reaches zero within 1 s of the wear-off line, disappears")
+is closed on the desktop rig. The colour precedence in §4 — critical at ≤ 5 s,
+else warning at ≤ 10 s — runs correctly against a live, real-time countdown,
+not just the fixture replay. The full live path (log file → `wispd` → socket →
+`wisp-hud`) works end-to-end for a mez timer over the real game, and the §3
+invariant continues to hold while it does.
+
+**Not verified — not specifically exercised, not failed:**
+
+- A broken mez removed on the awaken line.
+- Kill clearing a mob's rows, and zone-change clearing the list.
+- Restarting `wisp-hud` mid-fight showing the same remaining time.
+- The dimmed `estimated`-confidence shade, as distinct from a `measured` row's
+  white — this run did not distinguish the two.
+- The handheld (Steam Deck / Legion Go S) target.
+
+**A limit recorded, JDS300's own observation:** "spell rank goes up to X (10)
+at this time and I assume it will go higher but that can be a future problem
+when it does." The `ROMAN` table in `crates/wispd/src/rules.rs` (`split_rank`)
+maps only `I` through `X`. A cast line naming a rank above `X` (`XI` and
+beyond) does not match any entry in that table, `split_rank` returns `None`,
+the cast never becomes a pending cast, and no timer appears for that spell —
+silently, with no error logged. Accepted for now, since the client's current
+maximum rank is X; recorded in the spec's risk table
+(`docs/specs/2026-09-08-spec-2-timers.md`, §7) against the day the client
+raises it.
