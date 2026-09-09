@@ -455,3 +455,30 @@ user's `ls` alias prints file-type icons, which corrupted the parsed
 display numbers as zeros. `pgrep -a Xwayland` is the reliable way to find
 gamescope's display number, and `env DISPLAY=<n> xprop -root` confirms it by
 its `GAMESCOPE_*` root properties before anything is launched against it.
+
+### 2026-09-08 — Spec 2 design: sources consulted
+
+Spec 2 (timers) was designed from primary sources, with two recorded
+consultations:
+
+- **JDS300's own `loremaster/debuff_timer.py` (Tier B) and
+  `debuff_spell_reference.json` (Tier A)** — behaviour and data only. Two
+  behaviours carried into the spec: a prose landing is accepted only while a
+  compatible local cast is pending, because slow/resist prose names the target
+  and not the spell and prints for other casters too; and a DoT still ticking
+  past its computed expiry is held open. The scraped duration table was read
+  to compare against the client data and is **not** used by Wisp: the client's
+  own `spells_us.txt` supersedes it. No code, structure or naming moved.
+- **`amerzel/eql-info` (MIT)** — `SPELL_FORMAT.md` was read for the field
+  layout of `spells_us.txt` / `spells_us_str.txt` and recorded in
+  `THIRD_PARTY.md`. Its `spells.json` was fetched once to confirm the
+  `Mesmerization` row (id 307, cap 4) matched the local file, then discarded.
+  Wisp does not use that project's data, parser or site.
+- **Upstream `mez_timer.py` (Tier C)** was not consulted. Mez behaviour comes
+  from the fixture: ` has been mesmerized.`, ` has been awakened by `, and the
+  measured 37–41 s natural expiry for Mesmerization VI.
+
+Primary sources: the reference fixture and the EverQuest Legends client files
+in JDS300's install (`spells_us.txt`, 73,975 rows; `spells_us_str.txt`). The
+measurements in the spec's appendix were produced by throwaway scripts over
+the fixture on this date and are not kept.

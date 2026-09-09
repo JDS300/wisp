@@ -17,3 +17,10 @@ Recorded per the [clean-room charter](docs/specs/2026-09-08-clean-room-charter.m
   Full licence text: [`assets/DejaVuSansMono.LICENSE`](assets/DejaVuSansMono.LICENSE)
   (copied verbatim from `/usr/share/licenses/ttf-dejavu/LICENSE`, which
   matches the text embedded in the font's own name table).
+
+- **eql-info** (`github.com/amerzel/eql-info`, James Whiteneck) — MIT for its
+  source; game data excluded. Studied, not vendored: its `SPELL_FORMAT.md`
+  documents the field layout of the EverQuest Legends client's
+  `spells_us.txt` and `spells_us_str.txt`, which Spec 2 reads from the user's
+  own install. Wisp uses the documented layout, confirmed against the local
+  files, and none of that project's parser, database or site data.
