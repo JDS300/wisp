@@ -1,25 +1,16 @@
 // SPDX-License-Identifier: MIT
-//! Reads NDJSON snapshots from wispd.
+//! Reads NDJSON snapshots from wispd over its Unix socket.
+//!
+//! Moved here from `wisp-hud/src/client.rs` so the `wisp` CLI can be a second
+//! client: a binary crate cannot export these, and this reader already called
+//! `decode` from the crate it now lives in. No new dependency — `UnixStream`
+//! and `BufReader` are stdlib.
 
+use crate::{decode, ProtoError, Snapshot};
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use wisp_proto::{decode, ProtoError, Snapshot};
-
-extern "C" {
-    fn getuid() -> u32;
-}
-
-pub fn socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // SAFETY: getuid takes no arguments and cannot fail.
-            PathBuf::from(format!("/run/user/{}", unsafe { getuid() }))
-        });
-    base.join("wisp").join("wispd.sock")
-}
+use std::path::Path;
 
 pub struct SnapshotStream {
     reader: BufReader<UnixStream>,
@@ -42,7 +33,9 @@ impl SnapshotStream {
             Ok(0) => None,
             Ok(_) => Some(decode(&line)),
             Err(e) => {
-                eprintln!("wisp-hud: read error: {e}");
+                // No process name: every binary prefixes its own stderr, and
+                // this crate now has more than one consumer.
+                eprintln!("snapshot read error: {e}");
                 self.had_error = true;
                 None
             }
@@ -66,7 +59,11 @@ mod tests {
 
     fn temp_socket(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("wisp-hud-test-{}-{}.sock", name, std::process::id()));
+        p.push(format!(
+            "wisp-proto-test-{}-{}.sock",
+            name,
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }

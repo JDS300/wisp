@@ -21,41 +21,10 @@ use smithay_client_toolkit::{
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
 use wayland_client::{
-    globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_output, wl_registry, wl_shm, wl_surface},
-    Connection, Dispatch, EventQueue, QueueHandle,
+    globals::registry_queue_init,
+    protocol::{wl_output, wl_shm, wl_surface},
+    Connection, EventQueue, QueueHandle,
 };
-
-/// Interface names the compositor advertises. Empty if there is no Wayland
-/// display, which is itself a valid answer for selection purposes.
-pub fn wayland_globals() -> Vec<String> {
-    // A minimal Dispatch target that only needs the registry's global list;
-    // `registry_queue_init` already does the one round-trip we need.
-    struct GlobalsOnly;
-
-    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for GlobalsOnly {
-        fn event(
-            _state: &mut Self,
-            _proxy: &wl_registry::WlRegistry,
-            _event: wl_registry::Event,
-            _data: &GlobalListContents,
-            _conn: &Connection,
-            _qh: &QueueHandle<Self>,
-        ) {
-            // Selection only needs the initial snapshot below.
-        }
-    }
-
-    let Ok(conn) = Connection::connect_to_env() else {
-        return Vec::new();
-    };
-    let Ok((globals, _queue)) = registry_queue_init::<GlobalsOnly>(&conn) else {
-        return Vec::new();
-    };
-    globals
-        .contents()
-        .with_list(|list| list.iter().map(|g| g.interface.clone()).collect())
-}
 
 /// Dispatch target for the live connection. Holds only what event handling
 /// needs; the pool and the layer surface handle live directly on
@@ -362,28 +331,5 @@ impl OverlayBackend for LayerShellBackend {
             ));
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::backend::{choose, BackendKind};
-
-    #[test]
-    fn a_kde_style_global_list_selects_layer_shell() {
-        let globals: Vec<String> = ["wl_compositor", "wl_shm", "zwlr_layer_shell_v1", "xdg_wm_base"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(choose(&[], &globals), BackendKind::WlrLayerShell);
-    }
-
-    #[test]
-    fn a_gnome_style_global_list_falls_back_to_plain() {
-        let globals: Vec<String> = ["wl_compositor", "wl_shm", "xdg_wm_base"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(choose(&[], &globals), BackendKind::PlainWindow);
     }
 }

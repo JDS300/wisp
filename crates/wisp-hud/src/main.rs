@@ -1,10 +1,30 @@
 // SPDX-License-Identifier: MIT
 // crates/wisp-hud/src/main.rs
 mod backend;
-mod client;
 mod text;
 
-use backend::{BackendKind, OverlayBackend};
+use backend::OverlayBackend;
+use wisp_probe::BackendKind;
+
+// Task 4 replaces `socket_path` with `wisp_config::paths::socket_path()` and
+// deletes the `getuid` FFI declaration below along with it. `wisp-config` is
+// deliberately not a dependency of this crate yet: Task 1 writes it in
+// parallel with this one.
+extern "C" {
+    fn getuid() -> u32;
+}
+
+fn socket_path() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // SAFETY: getuid takes no arguments and cannot fail.
+            PathBuf::from(format!("/run/user/{}", unsafe { getuid() }))
+        });
+    base.join("wisp").join("wispd.sock")
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::ffi::OsStr;
@@ -46,10 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("layer-shell") => BackendKind::WlrLayerShell,
         Some("plain") => BackendKind::PlainWindow,
         Some(other) => return Err(format!("unknown backend: {other}").into()),
-        None => backend::choose(
-            &backend::gamescope_x11::root_atom_names(),
-            &backend::layer_shell::wayland_globals(),
-        ),
+        None => wisp_probe::detect().kind,
     };
     eprintln!("wisp-hud: backend {kind:?}, scale {scale}px");
 
@@ -79,8 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     surface.attach()?;
 
-    let path = client::socket_path();
-    let mut stream = client::connect(&path)?;
+    let path = socket_path();
+    let mut stream = wisp_proto::client::connect(&path)?;
     eprintln!("wisp-hud: connected to {}", path.display());
 
     while let Some(item) = stream.next_snapshot() {
