@@ -57,21 +57,42 @@ mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixListener;
 
-    fn temp_socket(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "wisp-proto-test-{}-{}.sock",
-            name,
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&p);
-        p
+    /// A socket path of its own per test, removed when the test ends whether it
+    /// passed or panicked.
+    ///
+    /// The helper this replaced removed the path *before* binding and nothing
+    /// removed it after, so every run left one file behind per test — the same
+    /// leak as the copy in `wispd/src/server.rs`, whose 668 files under `/tmp`
+    /// are what made it worth fixing in both. The pre-bind removal stays: a
+    /// leftover from a killed run still has to be cleared, and the guard is what
+    /// stops the next one.
+    struct TempSocket {
+        path: std::path::PathBuf,
+    }
+
+    impl TempSocket {
+        fn new(name: &str) -> TempSocket {
+            let mut path = std::env::temp_dir();
+            path.push(format!("wisp-proto-test-{}-{}.sock", name, std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            TempSocket { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempSocket {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 
     #[test]
     fn reads_successive_snapshots() {
-        let path = temp_socket("read");
-        let listener = UnixListener::bind(&path).unwrap();
+        let socket = TempSocket::new("read");
+        let listener = UnixListener::bind(socket.path()).unwrap();
         let writer = std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().unwrap();
             for seq in 1..=3 {
@@ -84,7 +105,7 @@ mod tests {
             }
         });
 
-        let mut stream = connect(&path).unwrap();
+        let mut stream = connect(socket.path()).unwrap();
         for expected in 1..=3u64 {
             let snap = stream.next_snapshot().unwrap().unwrap();
             assert_eq!(snap.seq, expected);
@@ -95,8 +116,8 @@ mod tests {
 
     #[test]
     fn surfaces_a_version_mismatch_rather_than_guessing() {
-        let path = temp_socket("version");
-        let listener = UnixListener::bind(&path).unwrap();
+        let socket = TempSocket::new("version");
+        let listener = UnixListener::bind(socket.path()).unwrap();
         std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().unwrap();
             let _ = sock.write_all(
@@ -104,20 +125,20 @@ mod tests {
             );
         });
 
-        let mut stream = connect(&path).unwrap();
+        let mut stream = connect(socket.path()).unwrap();
         assert!(stream.next_snapshot().unwrap().is_err());
     }
 
     #[test]
     fn ends_cleanly_when_the_daemon_goes_away() {
-        let path = temp_socket("eof");
-        let listener = UnixListener::bind(&path).unwrap();
+        let socket = TempSocket::new("eof");
+        let listener = UnixListener::bind(socket.path()).unwrap();
         std::thread::spawn(move || {
             let (_sock, _) = listener.accept().unwrap();
             // drop immediately -> EOF
         });
 
-        let mut stream = connect(&path).unwrap();
+        let mut stream = connect(socket.path()).unwrap();
         // Either an immediate None, or None after whatever arrived first.
         while let Some(item) = stream.next_snapshot() {
             let _ = item;

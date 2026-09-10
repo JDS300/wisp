@@ -14,11 +14,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use wisp_config::config::{Config, Key};
+use wisp_config::config::Config;
 use wisp_config::discover::scan_logs_dir;
 use wisp_config::paths::{config_path, socket_path};
-use wisp_config::source::{resolve_log_source, LogSource};
-use wisp_config::spells::{spells_dir_from_log, spells_dir_from_logs_dir};
+use wisp_config::source::{resolve_log_source, resolve_spells_dir, LogSource};
 use wisp_proto::{Confidence, Encounter, MeterRow, Personal, Snapshot, Timer, TimerKind, PROTOCOL_VERSION};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -61,7 +60,17 @@ fn main() -> std::io::Result<()> {
     }
 
     let path = socket_path();
-    let mut srv = server::Server::bind(&path)?;
+    let mut srv = match server::Server::bind(&path) {
+        Ok(srv) => srv,
+        // A daemon is already listening here, so this one has nothing to take
+        // over and nothing to unlink: say which socket is occupied and go.
+        // Exit 1 rather than 2, because the command line was fine.
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!("wispd: another daemon is listening on {}", path.display());
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e),
+    };
     eprintln!("wispd: listening on {}", path.display());
 
     // The stub feed is the only case with no source at all. A directory source
@@ -87,21 +96,15 @@ fn main() -> std::io::Result<()> {
         _ => None,
     };
 
-    // Timers need the client's spell data. `--spells` beats the config's
-    // `spells_dir` and either beats the location derived from the source -- the
-    // install being the parent of a directory named `Logs`. Derived from the
-    // *source*, not from the file currently open, because the table is loaded
-    // once per process and has to outlive every switch: it is 73,975 rows and
-    // 38,211,219 bytes, and reparsing it on a 250 ms tick is not acceptable.
-    // Without it the daemon still counts kills; it just says so once and
-    // publishes no timers.
-    let spells_dir = spells_override
-        .or_else(|| config.path_value(Key::SpellsDir))
-        .or_else(|| match &source {
-            Some(LogSource::Dir(dir)) => spells_dir_from_logs_dir(dir),
-            Some(LogSource::File(log)) => spells_dir_from_log(log),
-            None => None,
-        });
+    // Timers need the client's spell data. The order -- `--spells`, then the
+    // config's `spells_dir`, then the location derived from the source -- lives
+    // in wisp-config beside the log chain, so `wisp doctor` reports the same
+    // answer rather than restating it. Derived from the *source*, not from the
+    // file currently open, because the table is loaded once per process and has
+    // to outlive every switch: it is 73,975 rows and 38,211,219 bytes, and
+    // reparsing it on a 250 ms tick is not acceptable. Without it the daemon
+    // still counts kills; it just says so once and publishes no timers.
+    let spells_dir = resolve_spells_dir(spells_override, &config, source.as_ref());
 
     let mut tracker = match spells_dir {
         None => {

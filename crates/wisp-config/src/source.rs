@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
-//! Which log to read, given the flags and the config file.
+//! Which log to read, and which spell data goes with it, given the flags and the
+//! config file.
 //!
 //! One precedence rule with three consumers: `wispd` resolves it to decide what
 //! to tail, `wisp run` to decide what it was told, and `wisp doctor` to explain
 //! what it *would* tail and where that answer came from. Three copies of a
 //! four-step chain is three chances for the daemon and the doctor to disagree
-//! about the same machine.
+//! about the same machine. The spells chain beside it exists for the same
+//! reason, and rests on the log chain's answer rather than asking again.
 
 use crate::config::{Config, Key};
+use crate::spells::{spells_dir_from_log, spells_dir_from_logs_dir};
 use std::path::PathBuf;
 
 /// The log a binary should read: one file it was given, or a directory in which
@@ -42,6 +45,34 @@ pub fn resolve_log_source(
         .or_else(|| logs_dir_flag.map(LogSource::Dir))
         .or_else(|| config.path_value(Key::Log).map(LogSource::File))
         .or_else(|| config.path_value(Key::LogsDir).map(LogSource::Dir))
+}
+
+/// Where the client's spell data is, given the flag, the config file, and the log
+/// source [`resolve_log_source`] settled on.
+///
+/// The order is the spec's: `--spells`, else the config's `spells_dir`, else the
+/// location derived from the source — the install being the parent of a directory
+/// named `Logs`, or of the parent of a log file under one. Derivation is
+/// [`crate::spells`]' and is not restated here.
+///
+/// `None` means no timers, which is not an error: the daemon still counts kills
+/// and says once that timers are disabled. It sits beside the log chain for the
+/// same reason that chain sits here — `wispd` resolves it to load the table and
+/// `wisp doctor` resolves it to report where the table would come from, and two
+/// copies of a three-step order are two chances for the doctor to disagree with
+/// the daemon.
+pub fn resolve_spells_dir(
+    spells_flag: Option<PathBuf>,
+    config: &Config,
+    source: Option<&LogSource>,
+) -> Option<PathBuf> {
+    spells_flag
+        .or_else(|| config.path_value(Key::SpellsDir))
+        .or_else(|| match source {
+            Some(LogSource::Dir(dir)) => spells_dir_from_logs_dir(dir),
+            Some(LogSource::File(log)) => spells_dir_from_log(log),
+            None => None,
+        })
 }
 
 #[cfg(test)]
@@ -151,6 +182,76 @@ mod tests {
             resolve_log_source(None, None, &Config::default()),
             None,
             "nothing to tail, and the caller decides what that means"
+        );
+    }
+
+    /// The install as the game lays it out, and the two ways a source can name
+    /// it: a `Logs/` directory, or a log file inside one.
+    const INSTALL: &str = "/games/EverQuest Legends";
+
+    fn dir_source() -> LogSource {
+        LogSource::Dir(p("/games/EverQuest Legends/Logs"))
+    }
+
+    fn file_source() -> LogSource {
+        LogSource::File(p("/games/EverQuest Legends/Logs/eqlog_Daggo_freeport.txt"))
+    }
+
+    #[test]
+    fn the_spells_flag_wins() {
+        // All three sources set: what the user typed on the command line is what
+        // gets loaded, so a mis-derived location can always be overridden.
+        let config = Config::parse("spells_dir = /config/install\n");
+        assert_eq!(
+            resolve_spells_dir(Some(p("/flag/install")), &config, Some(&dir_source())),
+            Some(p("/flag/install"))
+        );
+        assert_eq!(
+            resolve_spells_dir(Some(p("/flag/install")), &config, Some(&file_source())),
+            Some(p("/flag/install")),
+            "the same, whichever shape the source has"
+        );
+    }
+
+    #[test]
+    fn config_spells_dir_beats_derivation() {
+        let config = Config::parse("spells_dir = /config/install\n");
+        assert_eq!(
+            resolve_spells_dir(None, &config, Some(&dir_source())),
+            Some(p("/config/install"))
+        );
+        // An empty value is unset here exactly as it is in the log chain, so the
+        // derivation still gets its turn.
+        let empty = Config::parse("spells_dir =\n");
+        assert_eq!(
+            resolve_spells_dir(None, &empty, Some(&dir_source())),
+            Some(p(INSTALL))
+        );
+    }
+
+    #[test]
+    fn spells_is_derived_from_the_source_when_nothing_names_it() {
+        let config = Config::default();
+        // A directory named `Logs` gives its parent...
+        assert_eq!(resolve_spells_dir(None, &config, Some(&dir_source())), Some(p(INSTALL)));
+        // ...and a log inside one gives its grandparent, so the two entry points
+        // agree about the same install.
+        assert_eq!(resolve_spells_dir(None, &config, Some(&file_source())), Some(p(INSTALL)));
+        // A source that derives nothing — a logs directory not named `Logs` —
+        // leaves the answer empty rather than guessing at a parent.
+        let elsewhere = LogSource::Dir(p("/somewhere/eqlogs"));
+        assert_eq!(resolve_spells_dir(None, &config, Some(&elsewhere)), None);
+    }
+
+    #[test]
+    fn no_source_and_no_key_is_none() {
+        // `wispd --stub`'s shape: no log to derive from and nothing written
+        // down, so no spell table and no timers. Not an error.
+        assert_eq!(resolve_spells_dir(None, &Config::default(), None), None);
+        // A flag alone still resolves, with no source at all to derive from.
+        assert_eq!(
+            resolve_spells_dir(Some(p("/flag/install")), &Config::default(), None),
+            Some(p("/flag/install"))
         );
     }
 }

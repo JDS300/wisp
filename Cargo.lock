@@ -550,6 +550,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp"
+version = "0.1.0"
+dependencies = [
+ "wisp-config",
+ "wisp-probe",
+ "wisp-proto",
+]
+
+[[package]]
 name = "wisp-config"
 version = "0.1.0"
 
