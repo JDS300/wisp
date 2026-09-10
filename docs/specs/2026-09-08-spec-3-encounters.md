@@ -133,6 +133,27 @@ enters damage taken. A player hitting a player (a duel, a charmed
 groupmate) counts as that player's damage: the log cannot tell it from a hit
 on a single-word named mob, and it is rare.
 
+**Group.** The log never lists who was already in your group before you
+joined it; membership is learned only from lines that prove it, and forgotten
+on any line that resets it:
+
+| Meaning | Line |
+|---|---|
+| member | `<Name> has joined the group.` |
+| member | `<Name> invites you to join a group.` |
+| member | `You notify <Name> that you agree to join the group.` |
+| member | `<Name> is now the leader of your group.` |
+| member | `<Name> is now group Main Assist` |
+| member | `<Name> tells the group, '…'` |
+| leave | `<Name> has left the group.` |
+| leave | `<Name> has been removed from the group.` |
+| reset | `You have joined the group.` / `You have been removed from the group.` / `You have left the group.` / `Your group has been disbanded.` |
+
+`You are now the leader of your group.` names nobody and is not a member
+line. A group row shows a name only once one of the member lines has proven
+it; you are never a row, since your own numbers are the personal line; and
+with nobody proven, there are no group rows at all.
+
 ### Encounters — `wispd::encounter`
 
 A **combat session**: it starts on the first damage line, dealt or taken,
@@ -160,26 +181,27 @@ block:
   "active": true, "duration_s": 42,
   "you": {"damage": 18234, "dps": 434, "taken": 2210, "taken_ps": 52,
           "healing": 900, "hps": 21, "overheal": 120},
-  "damage":  [{"name": "you", "amount": 18234, "per_s": 434, "is_you": true},
-              {"name": "Serenitee", "amount": 12010, "per_s": 286, "is_you": false}],
+  "damage":  [{"name": "Serenitee", "amount": 12010, "per_s": 286, "is_you": false}],
   "healing": [{"name": "Misery", "amount": 3100, "per_s": 74, "is_you": false}]
 }
 ```
 
 `encounter` is `null` when no fight is open or lingering. `damage` holds at
-most 5 rows and `healing` at most 3, ranked by amount, you always included in
-`damage` when you dealt any. Rates are integers, rounded.
+most 5 rows and `healing` at most 3, ranked by amount, restricted to sources
+the log has proven are in your group (§4 Actors, Group); you are never a row,
+since your own numbers are the `you` block. `is_you` stays in the wire format
+so this is not a version bump, but a group row can never set it: it is always
+`false`. Rates are integers, rounded.
 
 ### `wisp-hud`
 
 Below the kill count and above the timer rows, one **personal line**; below
-the timer rows, the **group rows**:
+the timer rows, the **group rows** — group members only, you excluded:
 
 ```
 7 kills
 DPS  434  in  52/s  HPS  21   0:42
 a jeering gargoyle   Mesmerization VI   12
-you            18.2k  434/s
 Serenitee      12.0k  286/s
 Misery          3100   74/s  +
 ```
@@ -236,11 +258,15 @@ line shapes it had missed** (deterministic; two runs identical each time):
 | largest fight by your damage: damage / duration / DPS / taken | `212467` / `482` / `441` / `21416` |
 | top damage sources overall (amount desc, name asc) | `you 23369545`, `Yder 1447129`, `Serenitee 1321322`, `Misery 1000700` |
 | top healers overall after you | `Serenitee 196052`, `Misery 116859` |
+| group membership lines seen / leaves / resets | `40` / `4` / `7` |
+| group membership at end of file | empty |
 
 **Live.**
 
 - During a fight the personal line updates within a second of each hit.
-- Group rows show groupmates ranked by damage; your row is highlighted.
+- Group rows show groupmates ranked by damage.
+- Nobody outside the group appears in the rows, and you are never one of
+  them — your numbers are the personal line above them.
 - Ten seconds after the last damage or heal the panel keeps its final numbers
   for 30 s, then clears to the empty form.
 - Zoning clears the panel at once.
@@ -259,6 +285,7 @@ line shapes it had missed** (deterministic; two runs identical each time):
 | **The 10 s idle timeout splits a slow fight** (a caster kiting) and merges back-to-back pulls. | Accepted; it is what meters in this genre do. The value is one constant. |
 | **A single-word named NPC's `on`-preposition special attack** (`<mob> <verb>s on <target> for N points of damage.`) is credited as a player's damage-out row until the mob has fought you directly — the `on` shape is exactly as exposed to the first risk above as ordinary melee is; it does not close that gap. Accepted; verified in the fixture, not merely theoretical: `Doreme frenzies on a haunted chest for 8 points of damage.` (Tue Aug 18 21:19:46) is credited to a "Doreme" row until `You strike Doreme` first marks it a mob, almost an hour later in log time. |
 | **The reference was re-derived after the whole-branch final review** found three line shapes it had missed (other sources' DoT ticks print `from <Spell> by <source>`, not the assumed `from <source>'s <Spell>`; a damage shield can land on you; a special attack can carry an `on` preposition before `YOU`). The §6 numbers moved: damage taken by you (melee+spell+dot+shield) rose from 2,900,237 to 3,164,597 (+9.1%, the new `taken_shield` category alone); other-sourced DoT damage counted in fights rose from 141,014 to 330,056 as four phantom players (Tuyen, Selo, Denon, Oathbreaker) — credited by a possessive split that matched apostrophes inside bard song names — were replaced by their real sources. | Standing. The numbers above are the acceptance criteria from 2026-09-09 forward; the plan's Appendix A carries the corrected script and its output. |
+| **Members present in the group before you joined it are unknown until they act.** The log has no roster line — it never lists who was already there, only who joins, is invited, leads, is Main Assist, talks on group chat, leaves, or is removed afterward. | Accepted. A quiet groupmate who never does one of those things never gets a row; this is a limit of the log, not a bug found live (JDS300, 2026-09-09; see PROVENANCE.md). |
 | **The panel is tall**: 18 lines at the default scale is about 1,100 px. | Accepted for Spec 3; `--scale 32` fits comfortably. Layout is Spec 4's problem. |
 | **Overheal is only known when the game prints two numbers.** Lines without `(M)` are taken as zero overheal. | Accepted; the number printed is the number counted (§3). |
 

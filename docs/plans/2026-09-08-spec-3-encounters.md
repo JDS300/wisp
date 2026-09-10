@@ -59,7 +59,7 @@ No heal in the fixture prints a potential smaller than its actual. Mob articles 
 
 ### The reference replay and its numbers
 
-Appendix A is the reference implementation of spec §4. Run on the frozen fixture on 2026-09-08; deterministic (two runs, identical). **Re-derived on 2026-09-09** after the whole-branch final review found three line shapes the reference had missed (other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>`; a damage shield can land on you; a special attack can carry an `on` preposition before `YOU`) — the table below is the corrected, current one; Task 3's replay test must reproduce these **exactly**:
+Appendix A is the reference implementation of spec §4. Run on the frozen fixture on 2026-09-08; deterministic (two runs, identical). **Re-derived on 2026-09-09** after the whole-branch final review found three line shapes the reference had missed (other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>`; a damage shield can land on you; a special attack can carry an `on` preposition before `YOU`) — the table below is the corrected, current one. **Extended again on 2026-09-09**, same day, after JDS300's live test of PR #3 found group rows showing players outside his group and himself twice: the script gained group-membership tracking and the three counters below it, none of the rows above moved. Task 3's replay test must reproduce these **exactly**:
 
 | Counter | Expected |
 |---|---|
@@ -76,6 +76,8 @@ Appendix A is the reference implementation of spec §4. Run on the frozen fixtur
 | largest fight by own damage: own / duration / DPS / taken | 212467 / 482 / 441 / 21416 |
 | damage sources summed over all fights, top 4 (amount desc, name asc) | you 23369545, Yder 1447129, Serenitee 1321322, Misery 1000700 |
 | healers summed over all fights, top 3 | you 1875603, Serenitee 196052, Misery 116859 |
+| group_member_lines / group_leaves / group_resets | 40 / 4 / 7 |
+| group membership at end of file | empty |
 
 If your implementation disagrees, the reference is the arbiter of the spec's rules **unless you can show the reference violates the spec text**; then stop and report both lines.
 
@@ -798,9 +800,13 @@ mod tests {
                 heal_outside_fight: 259121,
                 pet_announcements: 4890,
                 boundaries: 971,
+                group_member_lines: 40,
+                group_leaves: 4,
+                group_resets: 7,
             }
         );
         assert_eq!(t.pet_count(), 91);
+        assert_eq!(t.group_size(), 0, "the group is empty again at end of file");
         let h = t.history();
         assert_eq!(h.len(), 2524);
         let mut durs: Vec<u64> = h.iter().map(|f| f.duration_s).collect();
@@ -1595,7 +1601,7 @@ Record the outcome in `PROVENANCE.md` (dated) and the README's Spec 3 row, exact
 
 ## Appendix A — the reference replay
 
-Run on 2026-09-08 against the frozen fixture; deterministic across runs. **Re-derived on 2026-09-09**, after the whole-branch final review found three line shapes this script had missed: other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>` (the old `oth_dot` pattern matched only when a spell name itself happened to carry an apostrophe — a bard song title — and credited the text before it as a phantom source); a damage shield can land on you (`YOU are <verb> by <source>'s <thing> for N points of non-melee damage!`); and a special attack can carry an `on` preposition before `YOU` (`<mob> <verb>s on YOU for N points of damage.`). Throwaway Python; the arbiter of the spec's rules for Task 3; recorded here, not shipped.
+Run on 2026-09-08 against the frozen fixture; deterministic across runs. **Re-derived on 2026-09-09**, after the whole-branch final review found three line shapes this script had missed: other sources' DoT ticks print `from <Spell> by <source>`, not `from <source>'s <Spell>` (the old `oth_dot` pattern matched only when a spell name itself happened to carry an apostrophe — a bard song title — and credited the text before it as a phantom source); a damage shield can land on you (`YOU are <verb> by <source>'s <thing> for N points of non-melee damage!`); and a special attack can carry an `on` preposition before `YOU` (`<mob> <verb>s on YOU for N points of damage.`). **Extended again on 2026-09-09**, same day, after JDS300's live test of PR #3 found the group rows showing players outside his group and himself twice (once for damage, once for healing): the script now also tracks group membership, learned and forgotten from the log's own lines, and prints the group left standing at end of file. Throwaway Python; the arbiter of the spec's rules for Task 3; recorded here, not shipped.
 
 ```python
 #!/usr/bin/env python3
@@ -1632,6 +1638,10 @@ oth_heal = re.compile(r"^(.+?) healed (.+?)( over time)? for (\d+)(?: \((\d+)\))
 # boundaries / pets
 pet_announce = re.compile(r"^(.+?) (?:tells|told) you, 'Attacking .* Master\.'")
 zone = re.compile(r"^(You have entered |LOADING, PLEASE WAIT|Welcome to EverQuest Legends!)")
+# group membership, learned from the log's own lines
+grp_member = re.compile(r"^(?:(.+?) has joined the group\.|(.+?) invites you to join a group\.|You notify (.+?) that you agree to join the group\.|(.+?) is now the leader of your group\.|(.+?) is now group Main Assist|(.+?) tells the group, )")
+grp_leave = re.compile(r"^(.+?) (?:has left the group|has been removed from the group)\.")
+grp_reset = re.compile(r"^(You have joined the group\.|You have been removed from the group\.|You have left the group\.|Your group has been disbanded\.)")
 
 def logtime(ts):
     return int(datetime.datetime.strptime(ts, "%a %b %d %H:%M:%S %Y").timestamp())
@@ -1651,6 +1661,7 @@ class Ref:
         self.c = collections.Counter()
         self.enc = None
         self.finished = []
+        self.group = set()
     # ---- actor resolution
     def source(self, name, now):
         if name in ("You", "YOUR", "you", "your") or name == PLAYER:
@@ -1715,6 +1726,15 @@ class Ref:
             self.pets[m.group(1).lower()] = now; self.c["pet_announcements"] += 1; return
         if zone.match(body):
             self.close(); self.c["zone_or_session"] += 1; return
+        if grp_reset.match(body):
+            self.group.clear(); self.c["group_resets"] += 1; return
+        m = grp_leave.match(body)
+        if m:
+            self.group.discard(m.group(1).lower()); self.c["group_leaves"] += 1; return
+        m = grp_member.match(body)
+        if m:
+            name = next(g for g in m.groups() if g)
+            self.group.add(name.lower()); self.c["group_member_lines"] += 1; return
         # damage taken (target YOU) first: these mention YOU explicitly
         m = taken_melee.match(body)
         if m: self.damage_taken(m.group(1), int(m.group(3)), now, "melee"); return
@@ -1786,12 +1806,13 @@ def main():
     top3 = sorted(allsrc.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
     print("top damage sources (amount desc, name asc):", top3)
     durs = [e["dur"] for e in r.finished]
+    print("group at end", sorted(r.group))
     print("fight duration: min", min(durs), "median", sorted(durs)[len(durs)//2], "max", max(durs), "sum", sum(durs))
 
 main()
 ```
 
-Its output on 2026-09-09 (run in a thread with a raised recursion limit and a larger C stack; the plain interpreter call raises Python's `RuntimeError: internal error in regular expression engine` on this fixture's default stack depth — a Python/regex quirk, not a rule of the spec):
+Its output on 2026-09-09 (run directly against Python 3.14.7; deterministic across two runs):
 
 ```
 encounters 2524 finished 2524
@@ -1800,6 +1821,9 @@ encounters 2524 finished 2524
   dmg_out_melee = 15198942
   dmg_out_spell = 9082968
   encounters = 2524
+  group_leaves = 4
+  group_member_lines = 40
+  group_resets = 7
   heal_actual = 2364526
   heal_outside_fight = 259121
   heal_over = 838539
@@ -1821,10 +1845,11 @@ top damage sources overall: [('you', 23369545), ('Yder', 1447129), ('Serenitee',
 top healers overall: [('you', 1875603), ('Serenitee', 196052), ('Misery', 116859), ('Jennie', 41346)]
 own pet names seen (lower-cased): ['a barbed bone skeleton', 'a carrion ghoul', 'a cauldron hammerhead', 'a cauldron shark', 'a dry bone skeleton', 'a fetid fiend', 'a fire giant warrior', 'a flouting gargoyle'] count 91
 top damage sources (amount desc, name asc): [('you', 23369545), ('Yder', 1447129), ('Serenitee', 1321322), ('Misery', 1000700)]
+group at end []
 fight duration: min 1 median 36 max 738 sum 146813
 ```
 
-Notes for the Rust: Python's `\w` in the melee verb is any word character; the fixture's verbs are ASCII letters. `(.+?) for (\d+)` is a leftmost split; the Rust uses the rightmost ` for ` before the amount, which agrees on every fixture line (no name contains ` for `). The heal target is captured but never used by either. The other-DoT split now takes the *last* ` by ` in the remainder after `damage from`, matching the Rust's `rsplit_once(" by ")`; both agree because no spell name in the fixture contains its own ` by `. Rust's `f64::round()` rounds half away from zero; Python's `round()` rounds half to even — the two disagree only exactly at `x.5`, and none of the numbers above land on that boundary, so every rate and DPS value here agrees between the two languages.
+Notes for the Rust: Python's `\w` in the melee verb is any word character; the fixture's verbs are ASCII letters. `(.+?) for (\d+)` is a leftmost split; the Rust uses the rightmost ` for ` before the amount, which agrees on every fixture line (no name contains ` for `). The heal target is captured but never used by either. The other-DoT split now takes the *last* ` by ` in the remainder after `damage from`, matching the Rust's `rsplit_once(" by ")`; both agree because no spell name in the fixture contains its own ` by `. Rust's `f64::round()` rounds half away from zero; Python's `round()` rounds half to even — the two disagree only exactly at `x.5`, and none of the numbers above land on that boundary, so every rate and DPS value here agrees between the two languages. The group patterns are checked in the order reset, leave, member, so `You have joined the group.` is a reset and never a member line; `grp_member`'s six alternatives capture into different groups, so `next(g for g in m.groups() if g)` takes whichever one matched — the Rust's `classify` does the equivalent with separate `if let` arms.
 
 ---
 

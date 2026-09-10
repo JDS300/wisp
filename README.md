@@ -101,6 +101,10 @@ selects layer-shell; to use the gamescope backend instead, find gamescope's
 own XWayland with `pgrep -a Xwayland` and launch `wisp-hud` with `DISPLAY`
 set to that number.
 
+Spec 3's group rows are limited to names the log has proven are in your
+group; you are never one of them, since your own numbers are the personal
+line above them.
+
 ## Provenance
 
 Wisp is an independent project. It is **not** a fork, and it carries no code

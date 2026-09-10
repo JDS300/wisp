@@ -629,3 +629,29 @@ No new source was consulted for this correction: it is entirely a
 re-measurement of the frozen fixture already on record, the same one Spec 3
 was designed from. `spec-3-encounters`' final-fix brief and the reviewer's
 findings drove the correction; neither reads from `spinips` or `EQBuddy`.
+
+### 2026-09-09 — Spec 3 live-test fix: group rows limited to proven group members
+
+JDS300 played PR #3 live and found the group meter rows wrong in two ways at
+once: players outside his group appeared in the damage rows, and he appeared
+in them twice — once as a damage row, once as a healing row — on top of his
+own personal line. Ruling: a group row shows a name only once the log has
+proven it belongs to the player's group; the player is never a row, since
+the personal line already carries the player's own numbers; and when the log
+has proven nobody, there are no group rows at all.
+
+The log has no roster line — it never lists who was already in the group
+before the player joined it, only who does something groupy afterward
+(joins, is invited, is thanked for joining, becomes leader or Main Assist, or
+talks on group chat) or who leaves or is removed. Membership is tracked as a
+set, learned and forgotten from the log's own lines, and reset to empty on
+`You have joined/left/been removed from the group.` or `Your group has been
+disbanded.` — the reference script (re-derived against the same frozen
+fixture already on record, no new source consulted) counted, over the whole
+fixture: 40 lines proving membership, 4 leaves, 7 resets, and the group empty
+again by end of file. These three counters are now part of the §6 acceptance
+table and the replay test, alongside every number already there, which did
+not move.
+
+No new source was consulted: this is a rule derived from the fixture's own
+group-chat and membership lines, the same fixture Spec 3 was designed from.
