@@ -181,17 +181,15 @@ block:
   "active": true, "duration_s": 42,
   "you": {"damage": 18234, "dps": 434, "taken": 2210, "taken_ps": 52,
           "healing": 900, "hps": 21, "overheal": 120},
-  "damage":  [{"name": "Serenitee", "amount": 12010, "per_s": 286, "is_you": false}],
-  "healing": [{"name": "Misery", "amount": 3100, "per_s": 74, "is_you": false}]
+  "damage":  [{"name": "Serenitee", "amount": 12010, "per_s": 286}],
+  "healing": [{"name": "Misery", "amount": 3100, "per_s": 74}]
 }
 ```
 
 `encounter` is `null` when no fight is open or lingering. `damage` holds at
 most 5 rows and `healing` at most 3, ranked by amount, restricted to sources
 the log has proven are in your group (§4 Actors, Group); you are never a row,
-since your own numbers are the `you` block. `is_you` stays in the wire format
-so this is not a version bump, but a group row can never set it: it is always
-`false`. Rates are integers, rounded.
+since your own numbers are the `you` block. Rates are integers, rounded.
 
 ### `wisp-hud`
 

@@ -116,7 +116,7 @@ crates/
 - Modify: `crates/wisp-hud/src/main.rs` (test `Snapshot` literals: `v: 2` → `v: 3`, add `encounter: None,`)
 
 **Interfaces:**
-- Produces: `PROTOCOL_VERSION == 3`; `Personal { damage, dps, taken, taken_ps, healing, hps, overheal: u64 }`; `MeterRow { name: String, amount: u64, per_s: u64, is_you: bool }`; `Encounter { active: bool, duration_s: u64, you: Personal, damage: Vec<MeterRow>, healing: Vec<MeterRow> }`; `Snapshot.encounter: Option<Encounter>` (serde default).
+- Produces: `PROTOCOL_VERSION == 3`; `Personal { damage, dps, taken, taken_ps, healing, hps, overheal: u64 }`; `MeterRow { name: String, amount: u64, per_s: u64 }` (an `is_you: bool` was planned here and dropped on 2026-09-09 once group rows stopped carrying you); `Encounter { active: bool, duration_s: u64, you: Personal, damage: Vec<MeterRow>, healing: Vec<MeterRow> }`; `Snapshot.encounter: Option<Encounter>` (serde default).
 
 - [ ] **Step 1: Write the failing tests**
 

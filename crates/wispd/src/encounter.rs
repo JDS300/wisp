@@ -121,7 +121,7 @@ fn meter_rows(rows: &[(String, u64)], duration_s: u64, max: usize, group: &HashS
     rows.iter()
         .filter(|(n, _)| n != "you" && group.contains(&n.to_lowercase()))
         .take(max)
-        .map(|(n, a)| MeterRow { name: n.clone(), amount: *a, per_s: rate(*a, duration_s), is_you: false })
+        .map(|(n, a)| MeterRow { name: n.clone(), amount: *a, per_s: rate(*a, duration_s) })
         .collect()
 }
 
@@ -602,7 +602,7 @@ mod tests {
         }
         let e = t.encounter((BASE + 13) as f64).unwrap();
         assert_eq!(e.damage.len(), MAX_DAMAGE_ROWS);
-        assert!(!e.damage.iter().any(|r| r.is_you), "no you row: your numbers are the personal line");
+        assert!(!e.damage.iter().any(|r| r.name == "you"), "no you row: your numbers are the personal line");
         let names: Vec<_> = e.damage.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["Player0", "Player1", "Player2", "Player3", "Player4"]);
         assert_eq!(e.healing.len(), MAX_HEALING_ROWS);

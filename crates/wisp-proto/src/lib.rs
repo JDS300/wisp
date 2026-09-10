@@ -66,9 +66,6 @@ pub struct MeterRow {
     pub name: String,
     pub amount: u64,
     pub per_s: u64,
-    /// Always `false`. Group rows never include you, so this field can
-    /// never be set; kept in the wire format to avoid a version bump.
-    pub is_you: bool,
 }
 
 /// The row caps the producer (`wispd::encounter`) applies when it ranks a
@@ -179,10 +176,10 @@ mod tests {
             duration_s: 42,
             you: Personal { damage: 18_234, dps: 434, taken: 2_210, taken_ps: 52, healing: 900, hps: 21, overheal: 120 },
             damage: vec![
-                MeterRow { name: "you".to_string(), amount: 18_234, per_s: 434, is_you: true },
-                MeterRow { name: "Serenitee".to_string(), amount: 12_010, per_s: 286, is_you: false },
+                MeterRow { name: "Serenitee".to_string(), amount: 12_010, per_s: 286 },
+                MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 },
             ],
-            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74, is_you: false }],
+            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 }],
         }
     }
 
@@ -192,7 +189,7 @@ mod tests {
         s.encounter = Some(fight());
         let decoded = decode(&encode(&s)).unwrap();
         assert_eq!(decoded, s);
-        assert_eq!(decoded.encounter.unwrap().damage[1].name, "Serenitee");
+        assert_eq!(decoded.encounter.unwrap().damage[1].name, "Misery");
     }
 
     #[test]

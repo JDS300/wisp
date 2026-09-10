@@ -270,8 +270,8 @@ mod tests {
             active,
             duration_s: 42,
             you: Personal { damage: 18_234, dps: 434, taken: 2_210, taken_ps: 52, healing: 900, hps: 21, overheal: 120 },
-            damage: vec![MeterRow { name: "Serenitee".to_string(), amount: 1_320_500, per_s: 286, is_you: false }],
-            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74, is_you: false }],
+            damage: vec![MeterRow { name: "Serenitee".to_string(), amount: 1_320_500, per_s: 286 }],
+            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 }],
         }
     }
 
@@ -327,8 +327,8 @@ mod tests {
     #[test]
     fn the_maximum_layout_is_one_kill_line_one_personal_line_eight_timers_five_damage_and_three_healing() {
         let mut e = fight(true);
-        e.damage = (0..7).map(|i| MeterRow { name: format!("Player{i}"), amount: 1000 - i, per_s: 10, is_you: false }).collect();
-        e.healing = (0..5).map(|i| MeterRow { name: format!("Healer{i}"), amount: 100 - i, per_s: 5, is_you: false }).collect();
+        e.damage = (0..7).map(|i| MeterRow { name: format!("Player{i}"), amount: 1000 - i, per_s: 10 }).collect();
+        e.healing = (0..5).map(|i| MeterRow { name: format!("Healer{i}"), amount: 100 - i, per_s: 5 }).collect();
         let mut s = snap(Some(e));
         s.timers = (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect();
         assert_eq!(hud_lines(&s).len(), 1 + 1 + MAX_ROWS + MAX_DAMAGE_ROWS + MAX_HEALING_ROWS);
