@@ -15,9 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Pinned to the version on the development box, so -D warnings below
+      # is a deterministic gate rather than one that moves under floating
+      # stable. The first run on floating stable picked up 1.98.1 and its
+      # new clippy::chunks_exact_to_as_chunks lint at four test sites in
+      # crates/wisp-hud/src/text.rs; bumping this pin means fixing those first.
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
-          toolchain: stable
+          toolchain: 1.94.1
           components: clippy
 
       - run: rustup target add x86_64-unknown-linux-musl
