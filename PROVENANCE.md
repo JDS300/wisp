@@ -549,3 +549,109 @@ silently, with no error logged. Accepted for now, since the client's current
 maximum rank is X; recorded in the spec's risk table
 (`docs/specs/2026-09-08-spec-2-timers.md`, §7) against the day the client
 raises it.
+
+### 2026-09-08 — Spec 3 design: sources consulted
+
+Spec 3 (encounters) was designed from the frozen fixture, with two
+consultations recorded here as the charter requires:
+
+- **Upstream `loremaster/loremaster.py` (Tier C) — behaviour only.** A grep
+  of its pet-handling comments and docstrings was read to learn *what it
+  does*: pets announce themselves with `Attacking … Master`, summoned pets
+  have one-word names while charmed creatures keep their own, a `My leader
+  is` reply identifies a pet's owner, charm aliases are treated as ephemeral.
+  The grep output also exposed two of its regular expressions for those
+  lines. Wisp's classifier was written afterwards from the fixture's own
+  lines (`A revultant rat told you, 'Attacking an abhorrent Master.'`) and
+  shares no expression, naming or structure with them. Nothing else in that
+  file was read.
+- **EQBuddy `README.md` — product description only, no source.** Learned that
+  it derives the player's pet name from Master messages, counts pet kills as
+  the player's, and shows a charmed pet as provisional until a Master message
+  confirms it. Wisp's 120 s pet time-to-live is its own rule, chosen from the
+  fixture's announcement cadence. The standing decision not to read
+  EQBuddy's source is unchanged.
+
+Primary sources: the frozen fixture (line shapes and counts in the spec's
+appendix) and a throwaway reference implementation of the spec's rules,
+recorded in the plan, whose output is the acceptance table.
+
+### 2026-09-09 — Spec 3 final-review fix wave: three missed line shapes, acceptance numbers re-derived
+
+The whole-branch review of `spec-3-encounters` found one Critical, three
+Important issues and a set of Minors. Fixing the Critical (an open fight
+never closing on screen when the log went quiet, `Tracker::encounter`
+checking only whether a fight was open rather than the estimated clock) and
+the Minors changed no numbers. Re-deriving the reference implementation to
+fix the Critical's sibling report — that the Important review findings
+implicated the reference itself — surfaced **three line shapes the original
+reference implementation had missed entirely or mismatched**, all found by
+re-measuring against the same frozen fixture already on record above (no new
+source consulted):
+
+- **Other sources' DoT ticks** print `<target> has taken <N> damage from
+  <Spell> by <source>.`, not the assumed `from <source>'s <Spell>.`. The old
+  possessive split matched only when a spell name happened to carry its own
+  apostrophe (a bard song title, e.g. `Selo's Chords of Cessation VII`) and
+  credited the text before that apostrophe as a phantom player. Four such
+  phantoms were found and removed: **Tuyen, Selo, Denon, Oathbreaker**. The
+  correct shape appears 11,614 times in the fixture; the corrected split
+  takes the source after the *last* ` by `, which is immune to an apostrophe
+  anywhere in the spell name.
+- **A damage shield can land on you**: `YOU are <verb> by <source>'s <thing>
+  for <N> points of non-melee damage!` — note `YOU are` (not the lower-case
+  `You`) and the line ends in `!`, not `.`, which is why an earlier grep for
+  a period-terminated `You are` line found nothing and the plan's Task 3
+  self-review recorded this as an impossible case. It appears 19,077 times
+  in the fixture and is now a `taken_shield` stat.
+- **A special attack can carry an `on` preposition before `YOU`**:
+  `<mob> <verb>s on YOU for <N> points of damage.` (245 times, e.g. `An icy
+  terror frenzies on YOU for 13 points of damage.`). The word directly
+  before `YOU` is `on`, not the verb, so the existing `<verb>s YOU` shape
+  missed it and it fell through to the general other-source melee shape
+  instead, crediting `An icy terror` with 13 points of *damage dealt* under
+  a garbage target name (`"on YOU"`) rather than counting it as damage
+  *taken*. Stripping a trailing ` on` after stripping ` YOU` recovers the
+  correct shape.
+
+**The §6 acceptance numbers moved accordingly** (2,524 fights, was 2,544;
+full corrected table in the spec and plan): damage taken by you across all
+four categories (melee/spell/dot/shield) rose from 2,900,237 to 3,164,597
+(+9.1%, entirely the new `taken_shield` category, since melee/spell/dot each
+moved by at most a few thousand); other-sourced DoT damage counted in fights
+rose from 141,014 (only the apostrophe-accident subset) to 330,056 as the
+four phantom players were replaced by their real sources. The reference
+script (Appendix A of the plan) was re-derived and re-run against the same
+frozen fixture on 2026-09-09, deterministic across two runs; its output is
+recorded there verbatim, superseding the 2026-09-08 output.
+
+No new source was consulted for this correction: it is entirely a
+re-measurement of the frozen fixture already on record, the same one Spec 3
+was designed from. `spec-3-encounters`' final-fix brief and the reviewer's
+findings drove the correction; neither reads from `spinips` or `EQBuddy`.
+
+### 2026-09-09 — Spec 3 live-test fix: group rows limited to proven group members
+
+JDS300 played PR #3 live and found the group meter rows wrong in two ways at
+once: players outside his group appeared in the damage rows, and he appeared
+in them twice — once as a damage row, once as a healing row — on top of his
+own personal line. Ruling: a group row shows a name only once the log has
+proven it belongs to the player's group; the player is never a row, since
+the personal line already carries the player's own numbers; and when the log
+has proven nobody, there are no group rows at all.
+
+The log has no roster line — it never lists who was already in the group
+before the player joined it, only who does something groupy afterward
+(joins, is invited, is thanked for joining, becomes leader or Main Assist, or
+talks on group chat) or who leaves or is removed. Membership is tracked as a
+set, learned and forgotten from the log's own lines, and reset to empty on
+`You have joined/left/been removed from the group.` or `Your group has been
+disbanded.` — the reference script (re-derived against the same frozen
+fixture already on record, no new source consulted) counted, over the whole
+fixture: 40 lines proving membership, 4 leaves, 7 resets, and the group empty
+again by end of file. These three counters are now part of the §6 acceptance
+table and the replay test, alongside every number already there, which did
+not move.
+
+No new source was consulted: this is a rule derived from the fixture's own
+group-chat and membership lines, the same fixture Spec 3 was designed from.

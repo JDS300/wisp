@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped whenever the snapshot shape changes incompatibly.
-/// 1: Spec 1 counters. 2: Spec 2 adds `timers`.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 1: Spec 1 counters. 2: Spec 2 adds `timers`. 3: Spec 3 adds `encounter`.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +45,49 @@ pub struct Timer {
     pub confidence: Confidence,
 }
 
+/// Your own numbers for the current fight. Rates are per second of fight
+/// duration, rounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Personal {
+    pub damage: u64,
+    pub dps: u64,
+    pub taken: u64,
+    pub taken_ps: u64,
+    pub healing: u64,
+    pub hps: u64,
+    pub overheal: u64,
+}
+
+/// One ranked row of a group meter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeterRow {
+    /// The source as the log printed it; an owned warder or pet is folded
+    /// into its owner. Never `you`: your numbers are the personal line.
+    pub name: String,
+    pub amount: u64,
+    pub per_s: u64,
+}
+
+/// The row caps the producer (`wispd::encounter`) applies when it ranks a
+/// fight's sources, and the consumer (`wisp-hud`) relies on when it sizes
+/// its window and iterates a snapshot's rows.
+pub const MAX_DAMAGE_ROWS: usize = 5;
+pub const MAX_HEALING_ROWS: usize = 3;
+
+/// The current fight, or the last one while it lingers. `active` is false
+/// while lingering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Encounter {
+    pub active: bool,
+    pub duration_s: u64,
+    pub you: Personal,
+    /// At most 5 rows, amount descending; group members only, you are on
+    /// the personal line.
+    pub damage: Vec<MeterRow>,
+    /// At most 3 rows, amount descending.
+    pub healing: Vec<MeterRow>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Protocol version. Receivers refuse anything they do not recognise.
@@ -59,6 +102,10 @@ pub struct Snapshot {
     /// Active timers, soonest expiry first, at most 16. Absent on v1 lines.
     #[serde(default)]
     pub timers: Vec<Timer>,
+    /// The current or lingering fight; `null` when there is none. Absent on
+    /// v1 and v2 lines.
+    #[serde(default)]
+    pub encounter: Option<Encounter>,
 }
 
 #[derive(Debug)]
@@ -119,6 +166,45 @@ mod tests {
             lines_ingested: 10432,
             session_kills: 7,
             timers: Vec::new(),
+            encounter: None,
+        }
+    }
+
+    fn fight() -> Encounter {
+        Encounter {
+            active: true,
+            duration_s: 42,
+            you: Personal { damage: 18_234, dps: 434, taken: 2_210, taken_ps: 52, healing: 900, hps: 21, overheal: 120 },
+            damage: vec![
+                MeterRow { name: "Serenitee".to_string(), amount: 12_010, per_s: 286 },
+                MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 },
+            ],
+            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 }],
+        }
+    }
+
+    #[test]
+    fn an_encounter_round_trips() {
+        let mut s = sample();
+        s.encounter = Some(fight());
+        let decoded = decode(&encode(&s)).unwrap();
+        assert_eq!(decoded, s);
+        assert_eq!(decoded.encounter.unwrap().damage[1].name, "Misery");
+    }
+
+    #[test]
+    fn a_missing_encounter_decodes_as_none_and_none_encodes_as_null() {
+        let line = r#"{"v":3,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
+        assert_eq!(decode(line).unwrap().encounter, None);
+        assert!(encode(&sample()).contains(r#""encounter":null"#));
+    }
+
+    #[test]
+    fn a_v2_line_is_refused_by_version() {
+        let v2 = r#"{"v":2,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
+        match decode(v2) {
+            Err(ProtoError::Version { found: 2, expected: 3 }) => {}
+            other => panic!("expected a version error, got {other:?}"),
         }
     }
 
@@ -154,7 +240,7 @@ mod tests {
     fn a_v1_line_is_refused_by_version_not_by_shape() {
         let v1 = r#"{"v":1,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0}"#;
         match decode(v1) {
-            Err(ProtoError::Version { found: 1, expected: 2 }) => {}
+            Err(ProtoError::Version { found: 1, expected: 3 }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }

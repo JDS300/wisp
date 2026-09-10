@@ -107,6 +107,7 @@ mod tests {
             lines_ingested: seq * 10,
             session_kills: kills,
             timers: Vec::new(),
+            encounter: None,
         }
     }
 

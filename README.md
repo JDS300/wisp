@@ -32,6 +32,21 @@ breaking on the awaken line, kill and zone clearing, restarting the HUD
 mid-fight, and the dimmed `estimated`-confidence shade are **not yet
 exercised**.
 
+The encounter panel shows your damage per second, the damage you are taking
+per second, your healing per second, and ranked rows for every player's
+damage and healing in the current fight — one ledger of the amounts the
+log's combat lines print, nothing inferred or carried from a spell table.
+The automated evidence is a deterministic replay of the same
+1.44-million-line fixture log, reproducing the reference implementation's
+counters exactly: 2,524 fights, with the full table in
+`docs/specs/2026-09-08-spec-3-encounters.md`, §6. **The personal line
+moving during a live fight, ranked group rows, the ten-second close and
+thirty-second linger before the panel clears, zoning clearing it at once,
+and restarting `wisp-hud` mid-fight showing the same numbers are not yet
+verified live** — pending JDS300. Known limits: other players' summoned
+pets have no owner in the log and appear as their own rows, and damage
+between two mobs is not counted at all.
+
 The split is not stylistic. On gamescope — what a Steam Deck runs — an overlay
 must be a client inside the game's own XWayland instance, on a different
 display from everything else. A single-process GUI cannot do that.
@@ -71,7 +86,7 @@ in the CLI and a config file instead.
 | 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
 | 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — verified live over EverQuest on the desktop (mez timer: row on landing, warning at 10 s, critical at 5 s, cleared at expiry) · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
-| 3 | Encounter model | Not started |
+| 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — automated only; live verification pending · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
 | 4 | Packaging and distribution | Not started |
 
 Spec 1's overlay backends and log parser are implemented and covered by
@@ -85,6 +100,10 @@ verified, and how. Launching `wisp-hud` from the desktop with no flags
 selects layer-shell; to use the gamescope backend instead, find gamescope's
 own XWayland with `pgrep -a Xwayland` and launch `wisp-hud` with `DISPLAY`
 set to that number.
+
+Spec 3's group rows are limited to names the log has proven are in your
+group; you are never one of them, since your own numbers are the personal
+line above them.
 
 ## Provenance
 
