@@ -259,7 +259,7 @@ pub fn set_in_text(text: &str, key: Key, value: &str) -> String;
 
   `get` and `path_value` are the only two accessors. There is deliberately no `scale()` or `backend()`: a typed accessor would have to parse, and the parser needs to know where the value came from to blame it correctly in an error message, which is the *reader's* business (Task 4). The config file is **UTF-8 text** — `parse` takes a `&str` and cannot carry anything else — so `path_value` is `PathBuf::from(String)` and the OsStr-clean rule belongs to `args_os`, where the binaries already apply it. `Config::load` on a file that is not valid UTF-8 returns the `io::Error`; each binary reports it once on stderr and treats the config as empty.
 
-  **Added by Task 3's fix wave**, and recorded here so this crate's whole surface is in one place: a sixth module, `source`, holding `LogSource` and `resolve_log_source` (signatures in Task 3's Interfaces), and `path_value` treating an **empty value as unset**. Both exist so the precedence chain is written once: `wispd` and `wisp doctor` call it, and neither may restate it.
+  **Added by Task 3's fix wave**, and recorded here so this crate's whole surface is in one place: a sixth module, `source`, holding `LogSource` and `resolve_log_source` (signatures in Task 3's Interfaces), and `path_value` treating an **empty value as unset**. Both exist so the precedence chain is written once: `wispd` and `wisp doctor` call it, and neither may restate it. **Task 5's review wave added `resolve_spells_dir` to the same module** — the spells chain was the last one still restated in two places, and it now lives beside the log chain it depends on.
 
 - Produces, in `wisp_config::spells`:
 
@@ -499,7 +499,7 @@ EOF
 - Modify: `crates/wispd/src/spells.rs` (delete `spells_dir_from_log` and its tests; they live in `wisp-config` now)
 
 **Interfaces:**
-- Consumes: `wisp_config::paths::{config_path, socket_path}`, `wisp_config::config::{Config, Key}`, `wisp_config::spells::{spells_dir_from_log, spells_dir_from_logs_dir}`, `wisp_config::discover::scan_logs_dir`.
+- Consumes: `wisp_config::paths::{config_path, socket_path}`, `wisp_config::config::{Config, Key}`, `wisp_config::source::{LogSource, resolve_log_source, resolve_spells_dir}`, `wisp_config::discover::scan_logs_dir`. It does **not** call `wisp_config::spells` directly: `resolve_spells_dir` chooses the derivation.
 - Produces, `wisp_config::source` — **moved here by Task 3's fix wave**, so that `wisp doctor` can call the same precedence chain the daemon uses instead of restating it (Task 5):
 
 ```rust
@@ -513,6 +513,18 @@ pub fn resolve_log_source(
 ```
 
   The chain is `--log` → `--logs-dir` → config `log` → config `logs_dir`, and `None` when nothing is set. It reads the two config keys through `Config::path_value`, which treats an **empty value as unset** — `log =` with nothing after it must not become a path of `""` and win over `logs_dir`.
+
+**Added by Task 5's review wave**, in the same module, for the same reason — the last restated precedence chain:
+
+```rust
+pub fn resolve_spells_dir(
+    spells_flag: Option<PathBuf>,
+    config: &Config,
+    source: Option<&LogSource>,
+) -> Option<PathBuf>;
+```
+
+  `--spells`, else config `spells_dir`, else derived from the resolved log source — `spells_dir_from_logs_dir` for a `Dir`, `spells_dir_from_log` for a `File` — else `None`. Both `wispd` and `wisp doctor` call it; neither may restate the order or pick a derivation itself.
 
 - Produces, `wispd::source`:
 
@@ -547,7 +559,7 @@ usage: wispd [--log <path> | --logs-dir <dir>] [--from-start] [--spells <dir>]
 
    with the real path from `config_path()`. When `config_path()` itself errors, name the missing variable instead. `--stub` reads neither `log` nor `logs_dir`, and does not error.
 2. Report unknown config keys once on stderr at startup: `wispd: ignoring unknown config key: <name>`. A `Config::load` that returns `Err` — a file that is not valid UTF-8, or one this process cannot read — is reported once at startup, in the same place, as `wispd: ignoring unreadable config <path>: <error>`, and the config is then treated as empty. **Never fatal:** an unreadable config stops the daemon no more than an absent one does.
-3. Spells directory: `--spells`, else config `spells_dir`, else derived — `spells_dir_from_logs_dir(dir)` for a `LogSource::Dir`, `spells_dir_from_log(file)` for a `LogSource::File`. Unchanged behaviour when none resolves: timers disabled with the existing message, daemon still runs.
+3. Spells directory: `wisp_config::source::resolve_spells_dir(spells_flag, &config, source.as_ref())` — `--spells`, else config `spells_dir`, else derived from the resolved log source, else `None`. Unchanged behaviour when it is `None`: timers disabled with the existing message, daemon still runs.
 4. `LogSource::Dir`, each tick: `scan_logs_dir`, then `next_action(current, scanned)`. On `Open` or `Switch`: drop the old `Tailer`, set `counters = Counters::default()`, rebuild the encounter tracker as `encounter::Tracker::new(&name)` with `name` from `encounter::player_name_from_log(&new_path)`, call `timers.reset()` if a tracker exists, and open with `Tailer::open(&new_path, from_start && !opened_anything_yet)`. `--from-start` therefore applies only to the very first file the process opens. An `Err` from `scan_logs_dir` on a tick — a directory that exists but cannot be read — is reported once on stderr as `wispd: cannot read <dir>: <error>` and then treated exactly like `Ok(None)`: `next_action` sees no newest file, the daemon keeps running and keeps publishing. Once means once per directory error, not once per tick.
 5. On `Switch` (not on the first `Open`), say once on stderr: `wispd: newest log is now <path>; resetting the session`.
 6. While nothing is open: publish snapshots with `Counters::default()` (zero counters, empty `ts`), `timers: vec![]`, `encounter: None`, and say once on stderr `wispd: waiting for a log in <dir>`. Never repeat that line, and never exit.
@@ -751,15 +763,16 @@ EOF
 - Create: `crates/wisp/Cargo.toml`, `src/main.rs`, `src/args.rs`, `src/run.rs`, `src/status.rs`, `src/doctor.rs`, `src/config_cmd.rs`, `tests/cli.rs`
 - Modify: `Cargo.toml` (root) — `members` gains `"crates/wisp"`
 - Modify: `crates/wispd/src/server.rs` — `Server::bind` refuses a path something is listening on
+- Modify: `crates/wispd/src/main.rs` — match that `AddrInUse` error, print the message, exit 1
 - Modify: `crates/wispd/src/server.rs` and `crates/wisp-proto/src/client.rs` — the `temp_socket` leak, in both copies
 
 **Interfaces:**
-- Consumes: `wisp_config::{paths, config, source::resolve_log_source, discover::list_logs, spells}`, `wisp_probe::{detect, BackendKind}`, `wisp_proto::{client::connect, decode, Snapshot, PROTOCOL_VERSION}`.
+- Consumes: `wisp_config::{paths, config, source::{resolve_log_source, resolve_spells_dir}, discover::list_logs}`, `wisp_probe::{detect, BackendKind}`, `wisp_proto::{client::connect, decode, encode, Snapshot, PROTOCOL_VERSION}`.
 - Produces, `wisp::args` (pure, no I/O, all unit-tested):
 
 ```rust
-pub enum Command { Run(RunArgs), Status { json: bool }, Doctor, Config(ConfigCommand), Version, Usage }
-pub enum ConfigCommand { Path, Show, Set(Key, String) }
+pub enum Command { Run(RunArgs), Status { json: bool }, Doctor(DoctorArgs), Config(ConfigCommand), Version, Usage }
+pub enum ConfigCommand { Path, Show, Set(Key, String), SetUnknown(String) }
 
 pub struct RunArgs {
     pub wispd: Vec<OsString>,   // forwarded verbatim
@@ -767,29 +780,48 @@ pub struct RunArgs {
     pub command: Option<Vec<OsString>>,
 }
 
+/// The five value flags `run` forwards, and nothing else. Doctor answers
+/// "what would this launch do", so it takes the same inputs and no others.
+pub struct DoctorArgs {
+    pub log: Option<PathBuf>,
+    pub logs_dir: Option<PathBuf>,
+    pub spells: Option<PathBuf>,
+    pub scale: Option<String>,
+    pub backend: Option<String>,
+}
+
 pub fn parse(argv: &[OsString]) -> Command;
 pub fn split_at_double_dash(args: &[OsString]) -> (&[OsString], &[OsString]);
 pub fn partition_run_flags(args: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>), OsString>;
 ```
 
-  `partition_run_flags` sends `--log`, `--logs-dir`, `--spells`, `--from-start`, `--stub` to wispd (the first four with their value argument) and `--scale`, `--backend` to wisp-hud (with their value); anything else is `Err(the offending argument)`, which `main` turns into usage on stderr and exit 2. **So is a value flag with no value after it** — `--scale` as the last argument, or `--scale --backend`, or `--log --stub`: `Err` naming the flag, usage on stderr, exit 2, never a silent drop and never forwarding a flag whose "value" is the next flag.
+  `ConfigCommand::Set` carries a parsed `Key`; `SetUnknown(String)` carries the text the user typed when `Key::parse` returns `None`, so the mandated message can name the key it was given — `wisp: unknown config key: <name> (one of: …)` — instead of reporting an anonymous parse failure.
+
+  `partition_run_flags` sends `--log`, `--logs-dir`, `--spells`, `--from-start` and `--stub` to wispd, and `--scale` and `--backend` to wisp-hud. **Five of those seven take a value** — `--log`, `--logs-dir`, `--spells`, `--scale`, `--backend` — and **two are presence flags**: `--from-start` and `--stub`, which `wispd` parses with `iter().any(…)`. A presence flag is forwarded bare and swallows no argument after it. Anything else is `Err(the offending argument)`, which `main` turns into usage on stderr and exit 2. **So is a value flag with no value after it**, and "no value" means the next argument is absent **or begins with `--`**: `--scale` last, `--scale --backend` and `--log --stub` are all `Err` naming the flag whose value is missing — one rule covering all three shapes, never a silent drop and never forwarding the next flag as a value. A value with a **single** leading `-` is a value, not a flag.
 - Produces, `wisp::run`:
 
 ```rust
 pub fn find_child(name: &str) -> Option<PathBuf>;                 // current_exe().parent() first, then PATH
 pub fn wait_for_socket(path: &Path, timeout: Duration) -> bool;   // a successful connect, never a file test
+
+pub enum Readiness { Listening, TimedOut, Exited(std::process::ExitStatus) }
+pub fn wait_for_daemon(child: &mut Child, path: &Path, timeout: Duration) -> Readiness;
+
 pub fn run(args: RunArgs) -> i32;                                  // the exit status main() returns
 ```
+
+  `find_child` skips a candidate that is not executable, using `std::os::unix::fs::PermissionsExt` — no `libc`, and no spawning something that cannot be spawned. `wait_for_daemon` polls `child.try_wait()` and a short connect attempt every 100 ms until the timeout, so a daemon that dies at once is reported at once.
 
 **Behaviour, exactly as the spec fixes it:**
 
 - `run` before starting anything: if `socket_path()` already accepts a connection, print `wisp: a daemon is already listening on <path>` to stderr and return 1. Start nothing.
-- Start wispd with its forwarded flags, inheriting stderr. Then `wait_for_socket(path, Duration::from_secs(5))`: on `false`, kill the daemon child, print `wisp: wispd did not listen on <path> within 5s` and return 1.
+- Start wispd with its forwarded flags, inheriting stderr. Then `wait_for_daemon(&mut child, &path, Duration::from_secs(5))`: on `Listening`, continue; on `Exited(status)`, print `wisp: wispd exited before listening: <status>` and return 1 **at once**; on `TimedOut`, kill the daemon child, print `wisp: wispd did not listen on <path> within 5s` and return 1. Watching the child is not a refinement: measured on the development box, with nothing configured `wispd` exits 2 immediately, and a wait that watches only the socket sits for the full five seconds and then reports the wrong thing — that it "did not listen" — when the real answer is that it died and said why.
 - Start wisp-hud with its forwarded flags.
 - With a command after `--`: start it too; when **the command** exits, stop the HUD and the daemon and return the command's status. If the HUD or the daemon dies first, print which one and its status on stderr, stop the other Wisp child, and **leave the command running** — then return the command's status when it finishes. Losing an overlay is not a reason to close a game.
-- Without a command: loop until SIGINT/SIGTERM or until either child exits, then stop the other; return 0 on a clean stop, 1 if a child failed.
+- Without a command: loop until SIGINT/SIGTERM or until either child exits, then stop the other. **Exit status:** 0 when the child that ended was killed by a signal — that is the Ctrl-C path, where the terminal signalled the whole process group and a death by signal is the expected outcome rather than a failure — and 1 on a non-zero exit.
+- With a command: return the command's own status, and **128 + signal number** when the command was itself signalled, which is the convention every shell uses.
 - **Signal handling is deliberately minimal**: poll `Child::try_wait` on both children every 100 ms and rely on the terminal delivering SIGINT to the whole process group, which the children share and therefore receive themselves. No signal crate, no self-pipe, no `libc`. Record the limitation in a comment in `run.rs` and in this plan's Self-review: a launcher that signals only `wisp` and not its group can leave a daemon behind. That is accepted for Spec 4.
-- `status`: connect, read one snapshot, print it as text; with `--json`, print the raw line exactly as it arrived. No daemon → `wisp: no daemon is listening on <path>` on stderr, exit 1.
+- `status`: connect, read one snapshot, print it as text; with `--json`, print `wisp_proto::encode(&snapshot)`. `SnapshotStream` hands back a decoded `Snapshot` and never the bytes it read, so re-encoding is the only option — and it is byte-identical to the line the daemon sent, for any line wispd can emit: reviewer A compared `encode`'s output against a raw `socat` read on 2026-09-09 and found the same keys in the same order with the same escaping and one trailing newline; no protocol struct holds a float, `encode` always writes `timers` and `encounter`, and only a v3 line decodes at all. So the spec's "the raw NDJSON line" is satisfied by re-encoding, and that is what this plan means by it. No daemon → `wisp: no daemon is listening on <path>` on stderr, exit 1.
 
   Text format, one labelled line per field, timers and meter rows indented two spaces beneath their heading:
 
@@ -829,9 +861,26 @@ backend:   PlainWindow (config backend = plain; detection would choose WlrLayerS
 ```
 
   Doctor parses the configured name with `wisp_probe::BackendKind::parse` (added in Task 4) and prints the same refusal the HUD would for a name that does not parse. **It never matches the three literals itself.** The `scale:` line is the same idea for the other key: the effective value and its origin — `--scale flag`, `config scale`, or `default 48`. That line is an addition to the spec's doctor list, which enumerates version, config, log, spells, socket and backend; it is here because a doctor that reports one of the HUD's two settings and not the other is half a diagnostic.
-- `config path` prints `config_path()` (or the error). `config show` prints every key of `Key::ALL` as `key = value` or `key = (unset)`, then any unknown keys under a `# unknown:` comment. `config set <key> <value>` loads the existing text (empty when the file is missing), calls `set_in_text`, creates the parent directory, writes atomically via a temp file and `rename` in the same directory, and prints the path it wrote. An unknown key exits **2** with `wisp: unknown config key: <name> (one of: log, logs_dir, spells_dir, scale, backend)`.
+
+  **Doctor stats what it prints, and a log that is not there is a failure.** A `LogSource::File` whose path does not exist prints `log:       <path> (config log, missing)` — or `(--log flag, missing)` when the flag named it — and **exits 1**, because that is exactly what `wispd` does with the same config and doctor must not report an unlaunchable setup as healthy. A `logs_dir` whose directory holds no `eqlog_*.txt` prints `newest of 0 files` and also exits 1. Everything else on the list is already a stat: the config file's existence, `spells_us.txt`, whether the socket answers. The spells directory comes from `wisp_config::source::resolve_spells_dir` — the same call `wispd` makes — and never from a restated chain.
+
+  **`doctor` takes the five value flags and nothing else:** `--log`, `--logs-dir`, `--spells`, `--scale`, `--backend`, parsed into `DoctorArgs`. Without them the spec's "flag" origin could never print, and doctor could not answer the question anyone actually asks it, which is "what would *this* launch do". No `--from-start` and no `--stub` — neither changes what doctor reports — and no `--`, since doctor starts nothing. Anything else is usage plus exit 2, and so is a value flag with no value.
+
+- `config path` prints `config_path()` (or the error). `config show` prints every key of `Key::ALL` in one of **three** forms: `key = value`, `key = (empty)` for a key that is present with nothing after the `=`, and `key = (unset)` for a key the file does not mention — `(empty)` is the same word the HUD uses when it refuses the value, so the two agree. Unknown keys follow under a `# unknown:` comment. `config set <key> <value>` loads the existing text (empty when the file is missing), calls `set_in_text`, creates the parent directory, writes atomically via a temp file and `rename` in the same directory — **`sync_all()` on the temp file before the rename**, as `DurationStore::save` does, so a crash cannot leave a renamed-but-empty config — and prints the path it wrote. An unknown key exits **2** with `wisp: unknown config key: <name> (one of: log, logs_dir, spells_dir, scale, backend)`.
 - Every command that *reads* the config — `run`, `status`, `doctor`, `config show` — reports a `Config::load` `Err` once as `wisp: ignoring unreadable config <path>: <error>` and carries on with an empty config. None of them exits because of it, and none repeats the line. `config set` is the one exception, because it is a writer: a file it cannot read is a file it must not overwrite, so it prints that same line and exits **1** without writing anything, rather than replacing bytes it could not read with a single key.
-- `--version` and `version` both print `wisp <CARGO_PKG_VERSION>`. Bare `wisp` and any unknown command print usage on stderr and exit 2 — bare `wisp` does **not** mean `run`.
+- `--version` and `version` both print `wisp <CARGO_PKG_VERSION>`. Bare `wisp` and any unknown command print usage on stderr and exit 2 — bare `wisp` does **not** mean `run`. The usage text, verbatim:
+
+```
+usage: wisp run [--log <path> | --logs-dir <dir>] [--spells <dir>] [--from-start] [--stub]
+                [--scale <px>] [--backend <name>] [-- <command>...]
+       wisp status [--json]
+       wisp doctor [--log <path> | --logs-dir <dir>] [--spells <dir>] [--scale <px>] [--backend <name>]
+       wisp config path | show | set <key> <value>
+       wisp version | --version
+       config keys: log, logs_dir, spells_dir, scale, backend
+```
+
+  `--spells` is not an alternative to `--log`/`--logs-dir` — it is an independent third setting — and `--scale` is not an alternative to `--backend`. An earlier draft of this plan showed both inside the same bracket group, which reads as "pick one" and is wrong.
 
 **Two changes outside `crates/wisp`, both found by Task 3's run:**
 
@@ -840,15 +889,15 @@ backend:   PlainWindow (config backend = plain; detection would choose WlrLayerS
 
 - [ ] **Step 1: Write the failing tests**
 
-`src/args.rs` unit tests: `bare_wisp_is_usage`; `an_unknown_command_is_usage`; `version_in_both_forms`; `status_takes_an_optional_json_flag`; `config_path_show_and_set_parse`; `config_set_needs_two_arguments`; `config_set_refuses_an_unknown_key`; `split_at_double_dash_partitions_the_command`; `a_double_dash_with_nothing_after_it_is_no_command`; `every_wispd_flag_lands_in_the_wispd_list`; `every_hud_flag_lands_in_the_hud_list`; `stub_goes_to_wispd`; `an_unrecognised_flag_is_an_error_naming_it`; `a_value_flag_without_a_value_is_an_error` (three cases: the flag last, the flag followed by another flag, and a wispd value flag followed by a HUD one — each `Err` naming the flag that has no value); `flags_keep_their_values_next_to_them`; `non_utf8_values_survive_partitioning` (build the `OsString` from bytes).
+`src/args.rs` unit tests: `bare_wisp_is_usage`; `an_unknown_command_is_usage`; `version_in_both_forms`; `status_takes_an_optional_json_flag`; `config_path_show_and_set_parse`; `config_set_needs_two_arguments`; `config_set_refuses_an_unknown_key` (asserting it parses to `SetUnknown` carrying the text the user typed); `doctor_takes_the_five_value_flags_and_nothing_else` (all five parse into `DoctorArgs`; `--from-start`, `--stub` and `--` are each usage plus exit 2; a value flag with no value likewise); `split_at_double_dash_partitions_the_command`; `a_double_dash_with_nothing_after_it_is_no_command`; `every_wispd_flag_lands_in_the_wispd_list`; `every_hud_flag_lands_in_the_hud_list`; `stub_goes_to_wispd`; `presence_flags_are_forwarded_bare` (`--from-start` and `--stub` take the argument after them nowhere); `an_unrecognised_flag_is_an_error_naming_it`; `a_value_flag_without_a_value_is_an_error` (three cases: the flag last, the flag followed by another flag, and a wispd value flag followed by a HUD one — each `Err` naming the flag that has no value); `a_value_with_one_leading_dash_is_a_value`; `flags_keep_their_values_next_to_them`; `non_utf8_values_survive_partitioning` (build the `OsString` from bytes).
 
-`src/run.rs` unit tests: `find_child_prefers_the_directory_of_the_current_exe`; `find_child_falls_back_to_path`; `wait_for_socket_is_false_for_a_path_nothing_listens_on` (a temp path, a 200 ms timeout); `wait_for_socket_is_true_once_a_listener_exists` (bind a `UnixListener` in the test).
+`src/run.rs` unit tests: `find_child_prefers_the_directory_of_the_current_exe`; `find_child_falls_back_to_path`; `find_child_skips_a_non_executable_candidate` (a file on the temp `PATH` with mode `0644` is passed over for a later executable one, using `PermissionsExt`); `wait_for_socket_is_false_for_a_path_nothing_listens_on` (a temp path, a 200 ms timeout); `wait_for_socket_is_true_once_a_listener_exists` (bind a `UnixListener` in the test).
 
 `crates/wispd/src/server.rs`, for the change described above: `bind_refuses_a_path_something_is_listening_on`, and — since the guard replaces the helper every test in that module uses — the four existing tests keep their names and assertions and only change how they get a path. Same in `crates/wisp-proto/src/client.rs` for its three.
 
 `src/status.rs` and `src/doctor.rs` unit tests over their formatting functions, given a hand-built `Snapshot`: `status_text_names_every_field`; `no_timers_prints_no_indented_lines`; `a_null_encounter_prints_fight_none`; `amounts_compact_as_the_hud_does`; `doctor_names_the_source_of_the_log`; `doctor_reports_a_missing_config_file`; `doctor_reports_the_backend_the_hud_will_actually_use` (a config `backend = plain` over a `Detection` that would choose `WlrLayerShell` prints the winner, its origin and what detection would have chosen); `doctor_refuses_an_unparseable_config_backend_as_the_hud_does`; `doctor_reports_the_effective_scale_and_its_origin` (flag, config, default 48).
 
-`tests/cli.rs` integration tests, spawning `env!("CARGO_BIN_EXE_wisp")`, `…_wispd` and `…_wisp-hud` with a per-test temp `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. **Any test that writes a config file by hand writes it to `$XDG_CONFIG_HOME/wisp/config` and creates the `wisp/` directory first**: `config_path()` does not create it, and a file at `$XDG_CONFIG_HOME/config` is never read by anything, which silently turns a config test into a no-config test. `wisp config set` is the exception — creating the directory is its job, and its tests check that it does.
+`tests/cli.rs` integration tests, spawning `env!("CARGO_BIN_EXE_wisp")` with a per-test temp `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. **`CARGO_BIN_EXE_*` is defined only for the package's own binaries**, so there is no `CARGO_BIN_EXE_wispd` or `CARGO_BIN_EXE_wisp-hud` in `crates/wisp`: resolve the siblings the way `find_child` does, from the directory beside `env!("CARGO_BIN_EXE_wisp")`, and when one is missing fail loudly with a message telling the reader to run `cargo build --workspace` first. A skipped or silently passing test is worse than a loud failure here. **Any test that writes a config file by hand writes it to `$XDG_CONFIG_HOME/wisp/config` and creates the `wisp/` directory first**: `config_path()` does not create it, and a file at `$XDG_CONFIG_HOME/config` is never read by anything, which silently turns a config test into a no-config test. `wisp config set` is the exception — creating the directory is its job, and its tests check that it does.
 
 - `config_set_then_show_round_trips_a_path_with_spaces` — set `logs_dir` to `/a path/with spaces/Logs`, assert `config show` prints it back byte-for-byte;
 - `config_set_preserves_a_comment`;
@@ -858,13 +907,15 @@ backend:   PlainWindow (config backend = plain; detection would choose WlrLayerS
 - `status_json_against_a_stub_daemon_is_one_v3_line` — spawn `wispd --stub`, wait for the socket, run `wisp status --json`, assert one line and that `wisp_proto::decode` accepts it with `v == 3`;
 - `status_without_a_daemon_exits_1_and_names_the_socket`;
 - `run_refuses_to_start_when_a_daemon_is_already_listening` — spawn `wispd --stub`, then `wisp run --stub`, assert exit 1 and that stderr names the socket path;
+- `run_reports_a_daemon_that_exits_before_listening` — `wisp run` with no log configured anywhere and no `--stub`, so wispd exits 2 at once: assert `wisp run` returns 1 **without waiting out the five seconds** (bound the elapsed time in the assertion — under two seconds is plenty — otherwise the test passes with the old behaviour and only runs slowly), and that stderr carries `wisp: wispd exited before listening:` rather than `did not listen … within 5s`;
 - `run_stub_sleep_starts_and_stops_everything` — `wisp run --stub --backend plain -- sleep 1`; **skip with an `eprintln!` when `std::env::var("DISPLAY").is_err()`**, since the HUD needs a display and CI has none; when it runs, assert exit 0 and then assert `wisp status` exits 1, proving no daemon survived;
 - `a_dying_wisp_child_leaves_the_command_running` — DISPLAY-gated exactly like its sibling: `wisp run --stub --backend plain -- sleep 3`, find **this test's** daemon child and kill it, assert `wisp run` is still alive while the `sleep` is, and that it exits **0** when the command ends. Find it by scanning `/proc/*/environ` for this test's `XDG_RUNTIME_DIR`: `pgrep -f 'wispd --stub'` matches the command line only, so it would also match a developer's own stub daemon from another checkout, and killing that is not this test's business. This is the spec's ruling that losing an overlay is no reason to close a game;
 - `doctor_exits_1_and_prints_the_config_path_when_no_log_resolves`;
+- `doctor_reports_a_missing_log_file_and_exits_1` — a config `log =` pointing at a path that does not exist: the `log:` line ends `(config log, missing)`, the exit status is 1, and the same holds when the path came from `--log` (`(--log flag, missing)`); a `logs_dir` with no `eqlog_*.txt` in it prints `newest of 0 files` and also exits 1;
 - `doctor_exits_0_and_names_the_newest_file_when_logs_dir_is_set` — a temp dir with two `eqlog_*.txt` files whose mtimes are set with `File::set_modified`;
 - `an_unreadable_config_is_reported_once_and_ignored` — a temp `XDG_CONFIG_HOME` with non-UTF-8 bytes at **`$XDG_CONFIG_HOME/wisp/config`** (directory created by the test): `wisp doctor` still runs, exits 1 for the absent log, and its stderr carries `wisp: ignoring unreadable config <path>: <error>` exactly once, naming that path; `wisp status` against a stub daemon behaves the same way and still prints the snapshot;
 - `config_set_refuses_to_overwrite_a_file_it_cannot_read` — the same unreadable file: exit **1**, the same message, and the file's bytes unchanged afterwards;
-- `the_hud_refuses_a_bad_config_scale_with_exit_2` — spawn `env!("CARGO_BIN_EXE_wisp-hud")` with a temp `XDG_CONFIG_HOME` whose `wisp/config` holds `scale = not-a-number`, and assert exit **2** with stderr exactly `wisp-hud: invalid config scale: not-a-number`. This is the only automated test that reaches the HUD's refusal wiring, since Task 4 could test the message but not the process exit. **No display is needed** — the refusal happens before detection and attach — so it runs in CI and must not be DISPLAY-gated.
+- `the_hud_refuses_a_bad_config_scale_with_exit_2` — spawn the sibling `wisp-hud` resolved beside `env!("CARGO_BIN_EXE_wisp")` with a temp `XDG_CONFIG_HOME` whose `wisp/config` holds `scale = not-a-number`, and assert exit **2** with stderr exactly `wisp-hud: invalid config scale: not-a-number`. This is the only automated test that reaches the HUD's refusal wiring, since Task 4 could test the message but not the process exit. **No display is needed** — the refusal happens before detection and attach — so it runs in CI and must not be DISPLAY-gated.
 
 Every spawned child is killed from a guard's `Drop`, and no scratch directory survives the suite.
 
@@ -920,12 +971,15 @@ EOF
 
 **Self-review:**
 
+Run every `git grep` below with **`--untracked`**. `crates/wisp` is new in this task, and a plain `git grep` searches the index, so it reports nothing at all for files that are not committed yet — which looks exactly like a pass.
+
 - [ ] `crates/wisp/Cargo.toml` depends on `wisp-proto`, `wisp-config`, `wisp-probe` and nothing else. No clap, no signal crate, no `libc`.
 - [ ] Bare `wisp` prints usage and exits 2; it does not start anything.
 - [ ] `wisp run` forwards only the seven flags the spec lists, and an eighth is usage plus exit 2.
-- [ ] `git grep -n 'GAMESCOPE_\|zwlr_layer_shell_v1\|fn choose' crates/wisp` is **empty**: `doctor` calls `wisp_probe::detect()` and prints its `reason()`, so this crate states no detection rule of its own — not even in text it assembles itself.
-- [ ] `git grep -n '"layer-shell"\|"gamescope"\|"plain"' crates/wisp` is **empty** too: the three backend names are parsed by `wisp_probe::BackendKind::parse`, in `wisp-hud` and here alike.
-- [ ] `git grep -n 'LogsDir' crates/wisp/src/doctor.rs` shows only the origin label it prints (`config logs_dir`), never a precedence match: the chain belongs to `wisp_config::source::resolve_log_source`, which doctor calls.
+- [ ] `git grep --untracked -n 'GAMESCOPE_\|zwlr_layer_shell_v1\|fn choose' crates/wisp` is **empty**: `doctor` calls `wisp_probe::detect()` and prints its `reason()`, so this crate states no detection rule of its own — not even in text it assembles itself.
+- [ ] `git grep --untracked -n '"layer-shell"\|"gamescope"\|"plain"' crates/wisp` is **empty** too: the three backend names are parsed by `wisp_probe::BackendKind::parse`, in `wisp-hud` and here alike.
+- [ ] `git grep --untracked -n 'LogsDir' crates/wisp/src/doctor.rs` shows only the origin label it prints (`config logs_dir`), never a precedence match: the chain belongs to `wisp_config::source::resolve_log_source`, which doctor calls.
+- [ ] `git grep --untracked -n 'spells_dir_from' crates/wisp crates/wispd/src/main.rs` is **empty**: both call `resolve_spells_dir`, and neither chooses between the file and the directory derivation itself.
 - [ ] `wait_for_socket` never calls `Path::exists`.
 - [ ] The unreadable-config message is identical in form in all three binaries — `wispd:`, `wisp-hud:` and `wisp:` differ, and nothing after the program name does.
 - [ ] No child process or socket file outlives the test suite: no scratch directory of the suite remains, and `pgrep -af "$PWD/target"` is empty — no daemon whose executable is under **this worktree's** `target/`. A developer's own `wispd` from another checkout or an installed artifact is not this suite's leak; do not kill it, and do not weaken the check to a name match.
@@ -1309,7 +1363,13 @@ No new code. This task is the record, and the record is the point of the charter
 
 **THIRD_PARTY.md** — a new "Packaging tooling" section recording, as *used, not vendored*: `appimagetool` 1.9.1 (MIT, fetched at a pinned SHA-256 into a cache outside the repository); `AppImage/type2-runtime` release `20251108` (MIT, **embedded in the AppImages we ship** — the one thing in this list that ends up inside an artifact, so record it as vendored-in-output rather than merely used, and note the runtime's own licence text is available at the URL in this plan); `flatpak-cargo-generator.py` from `flatpak/flatpak-builder-tools` (MIT by the file's own declaration; used to generate a committed JSON, never copied into the tree); `zsync` (Artistic per its distribution package; build-time only). Also record that `smithay-client-toolkit`'s `xkbcommon` feature was dropped, which removes `xkbcommon` from the dependency tree — the tree's shape is part of what a reader of this file needs.
 
-**`docs/specs/2026-09-09-spec-4-packaging.md`** — exactly two edits, and no others. The Status line becomes implemented, in the wording the earlier specs use, naming what was verified automatically and what is pending JDS300. And §7 gains one new row, beside the existing `Tailer::poll` row, because Task 3's `an_unreadable_directory_does_not_kill_the_daemon` found a second behaviour of the same code that the spec does not yet record:
+**One known wart, deliberately not fixed in this task.** `wispd` given a `--log` — or a config `log` — that does not exist dies with a raw `Debug` dump of the `io::Error`, `Error: Os { code: 2, kind: NotFound, … }`, from the `?` in `main`; it never names the file. The fix is one line, `wispd: cannot open <path>: <error>` and exit 1, and it is **not** done here: Task 9 is the docs task, it carries no test suite of its own, and a daemon behaviour change in a commit titled "Spec 4 docs" is exactly the kind of thing a whole-branch review should not have to find. It is also no longer opaque to a user, because Task 5's launcher now reports `wisp: wispd exited before listening: exit status: 1` beside the dump. So it is recorded as a Spec 5 backlog row in the spec's §7 — the third and last edit this task makes to that file:
+
+```
+| **`wispd` given a `--log` (or config `log`) path that does not exist dies with a raw `Debug` dump of the `io::Error`** — `Error: Os { code: 2, kind: NotFound, … }` — instead of a message naming the file. | Found by Task 5's review. Deferred to Spec 5: `wisp run` reports `wispd exited before listening: <status>` beside it, so the failure is comprehensible from the launcher, and the fix is a daemon behaviour change that does not belong in a docs task. The replacement is one line — `wispd: cannot open <path>: <error>`, exit 1. |
+```
+
+**`docs/specs/2026-09-09-spec-4-packaging.md`** — exactly three edits, and no others. The Status line becomes implemented, in the wording the earlier specs use, naming what was verified automatically and what is pending JDS300. And §7 gains two rows, each quoted in this task in the form it must take: the `wispd` Debug-dump backlog row above, and this one beside the existing `Tailer::poll` row. Both record a behaviour of code the spec describes that the spec does not yet state — found by Task 5's review and by Task 3's `an_unreadable_directory_does_not_kill_the_daemon` respectively:
 
 ```
 | **`Tailer::poll` re-stats the log by path every tick,** so a `Logs/` directory that loses its search permission freezes an open tailer while the daemon keeps publishing unchanged numbers. | Found by Task 3's `an_unreadable_directory_does_not_kill_the_daemon`. Accepted: the numbers stop moving rather than going wrong, the daemon stays alive and keeps publishing, and recovery is automatic when the mode returns. Recorded here for Spec 5, beside the row about reopening a replaced file. |
@@ -1353,7 +1413,7 @@ Report: every command you ran with its output, every place the implementation di
 - [ ] The Tier A row is `no — declined 2026-09-09`, not `no`.
 - [ ] The type-2 runtime is recorded as ending up inside a shipped artifact; the other tools are recorded as used.
 - [ ] The README's Installing section does not tell anyone to build from source first.
-- [ ] The spec file changed in exactly two places — the Status line and the one new §7 risk row: `git diff docs/specs/` shows two hunks and nothing else.
+- [ ] The spec file changed in exactly three places — the Status line and the two new §7 risk rows: `git diff docs/specs/` shows three hunks and nothing else.
 
 ---
 
@@ -1390,8 +1450,9 @@ Report: every command you ran with its output, every place the implementation di
 7. **No `rust-version` is declared.** Task 7 measures the SDK's `rustc` and adds one only if the offline build fails without it.
 8. **`wisp doctor` prints more than the spec's list.** The spec enumerates version, config, log, spells, socket and backend; Task 5 adds a `scale:` line, and its `backend:` line reports the HUD's precedence (flag, config, detection) rather than detection alone, because a doctor that printed only detection would misreport what the HUD is about to do. Both came out of the Task 4 review. The spec's shorter list is not wrong, it is incomplete, and Task 9 should not "correct" the plan back to it.
 9. **`BackendKind::parse` and the two extra `Detection` fields are additions to the plan as first written**, made during Task 2 and Task 4 respectively. Task 2's Interfaces block records the six-field struct and the reason for the `*_connected` pair; Task 4 owns `parse`.
+10. **Task 5's review wave extended `wisp doctor` past the spec's table**: it takes the five value flags the spec's command column does not show, it stats the log it names and exits 1 when the file is missing, and Task 5's usage text is the authoritative one — the spec's is a summary. None of it contradicts the spec's intent, which is that doctor reports what *would* happen; the plan is simply the more detailed of the two, and Task 9 must not reconcile them by deleting the flags. `resolve_spells_dir` in `wisp-config` came out of the same wave.
 
-**Type consistency.** `Key`, `Config`, `PathError` and the five `wisp_config` function families are defined once, in Task 1 (`source` arriving in Task 3's fix wave), and consumed unchanged by Tasks 3, 4 and 5 — `Config` exposes `get` and `path_value` only, so every reader parses the raw text itself and can blame the right source in its error. `BackendKind`, `choose`, `Detection` and `detect` are defined once, in Task 2, and consumed by `wisp-hud` (Tasks 2 and 4) and `wisp doctor` (Task 5); the `GAMESCOPE_` prefix rule and the `zwlr_layer_shell_v1` literal exist in one crate. `BackendKind::parse` is added in Task 4 and is the only place the three backend names are matched against text, for `wisp-hud` and `wisp doctor` alike. `SnapshotStream` is defined once, in Task 2, and consumed by `wisp status` (Task 5). `LogSource` and `resolve_log_source` live in `wisp-config` — added by Task 3's fix wave — and are consumed by `wispd` (Task 3) and `wisp doctor` (Task 5), so the `--log` → `--logs-dir` → config chain exists once; `Action` and `next_action` are Task 3's and nobody else's. `wisp_version()` is defined in Task 6 and sourced by Task 8's tag check. No task redefines anything another task produced; if you find yourself writing a second `socket_path`, stop.
+**Type consistency.** `Key`, `Config`, `PathError` and the five `wisp_config` function families are defined once, in Task 1 (`source` arriving in Task 3's fix wave), and consumed unchanged by Tasks 3, 4 and 5 — `Config` exposes `get` and `path_value` only, so every reader parses the raw text itself and can blame the right source in its error. `BackendKind`, `choose`, `Detection` and `detect` are defined once, in Task 2, and consumed by `wisp-hud` (Tasks 2 and 4) and `wisp doctor` (Task 5); the `GAMESCOPE_` prefix rule and the `zwlr_layer_shell_v1` literal exist in one crate. `BackendKind::parse` is added in Task 4 and is the only place the three backend names are matched against text, for `wisp-hud` and `wisp doctor` alike. `SnapshotStream` is defined once, in Task 2, and consumed by `wisp status` (Task 5). `LogSource`, `resolve_log_source` and `resolve_spells_dir` live in `wisp-config` — `resolve_log_source` added by Task 3's fix wave, `resolve_spells_dir` by Task 5's — and are consumed by `wispd` (Task 3) and `wisp doctor` (Task 5), so the `--log` → `--logs-dir` → config chain and the `--spells` → config → derived chain each exist exactly once; `Action` and `next_action` are Task 3's and nobody else's. `wisp_version()` is defined in Task 6 and sourced by Task 8's tag check. No task redefines anything another task produced; if you find yourself writing a second `socket_path`, stop.
 
 ---
 
