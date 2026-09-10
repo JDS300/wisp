@@ -33,6 +33,12 @@ pub enum CombatEvent<'a> {
     PetAnnounce { pet: &'a str },
     /// Zone change or session start.
     Boundary,
+    /// A line that proves `name` is in your group.
+    GroupMember { name: &'a str },
+    /// `name` left or was removed from your group.
+    GroupLeave { name: &'a str },
+    /// You joined, left, were removed, or the group disbanded: membership is unknown again.
+    GroupReset,
 }
 
 /// `You kick a rat for 17 points of damage. (Critical)` -> without the note.
@@ -94,6 +100,42 @@ pub fn classify(body: &str) -> Option<CombatEvent<'_>> {
         || body == "Welcome to EverQuest Legends!"
     {
         return Some(Boundary);
+    }
+
+    // Group membership: no amount, so checked before the damage branches and
+    // in this order (reset, leave, member) so `You have joined the group.`
+    // is a reset, not a member line.
+    if matches!(
+        body,
+        "You have joined the group."
+            | "You have been removed from the group."
+            | "You have left the group."
+            | "Your group has been disbanded."
+    ) {
+        return Some(GroupReset);
+    }
+    for suffix in [" has left the group.", " has been removed from the group."] {
+        if let Some(name) = body.strip_suffix(suffix) {
+            return Some(GroupLeave { name });
+        }
+    }
+    if let Some((name, _)) = body.split_once(" tells the group, '") {
+        return Some(GroupMember { name });
+    }
+    for suffix in [
+        " has joined the group.",
+        " invites you to join a group.",
+        " is now the leader of your group.",
+        " is now group Main Assist",
+    ] {
+        if let Some(name) = body.strip_suffix(suffix) {
+            return Some(GroupMember { name });
+        }
+    }
+    if let Some(rest) = body.strip_prefix("You notify ") {
+        if let Some(name) = rest.strip_suffix(" that you agree to join the group.") {
+            return Some(GroupMember { name });
+        }
     }
 
     let b = strip_note(body);
@@ -321,6 +363,37 @@ mod tests {
         assert_eq!(classify("You have entered The Northern Desert of Ro."), Some(Boundary));
         assert_eq!(classify("LOADING, PLEASE WAIT..."), Some(Boundary));
         assert_eq!(classify("Welcome to EverQuest Legends!"), Some(Boundary));
+    }
+
+    #[test]
+    fn group_membership_lines() {
+        assert_eq!(classify("Chickpea has joined the group."), Some(GroupMember { name: "Chickpea" }));
+        assert_eq!(classify("Penuche invites you to join a group."), Some(GroupMember { name: "Penuche" }));
+        assert_eq!(
+            classify("You notify Penuche that you agree to join the group."),
+            Some(GroupMember { name: "Penuche" })
+        );
+        assert_eq!(
+            classify("Penuche is now the leader of your group."),
+            Some(GroupMember { name: "Penuche" })
+        );
+        assert_eq!(classify("Penuche is now group Main Assist"), Some(GroupMember { name: "Penuche" }));
+        assert_eq!(classify("Chickpea tells the group, 'hello'"), Some(GroupMember { name: "Chickpea" }));
+        assert_eq!(classify("Juicernaut has left the group."), Some(GroupLeave { name: "Juicernaut" }));
+        assert_eq!(
+            classify("Juicernaut has been removed from the group."),
+            Some(GroupLeave { name: "Juicernaut" })
+        );
+        assert_eq!(classify("You have joined the group."), Some(GroupReset));
+        assert_eq!(classify("You have been removed from the group."), Some(GroupReset));
+        assert_eq!(classify("You have left the group."), Some(GroupReset));
+        assert_eq!(classify("Your group has been disbanded."), Some(GroupReset));
+        assert_eq!(
+            classify("You are now the leader of your group."),
+            None,
+            "your own leadership names nobody and is not a member line"
+        );
+        assert_eq!(classify("Chickpea tells you, 'hi'"), None, "a plain tell is not a group line");
     }
 
     #[test]
