@@ -11,27 +11,52 @@ use std::io;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 pub struct SnapshotStream {
     reader: BufReader<UnixStream>,
     had_error: bool,
+    timed_out: bool,
 }
 
 pub fn connect(path: &Path) -> io::Result<SnapshotStream> {
     Ok(SnapshotStream {
         reader: BufReader::new(UnixStream::connect(path)?),
         had_error: false,
+        timed_out: false,
     })
 }
 
 impl SnapshotStream {
-    /// `None` means the daemon closed the connection, or a read error
-    /// occurred (logged to stderr before returning; see `had_error`).
+    /// Bounds how long `next_snapshot` will block waiting for the next line.
+    ///
+    /// The socket is unbounded by default (`None`, the OS default), which is
+    /// what `wisp-hud` needs: its read loop is meant to sit there for as long
+    /// as the daemon is quiet, and this method exists so that default never
+    /// changes under it — `wisp-hud` does not call it. Only `wisp status`
+    /// does, a one-shot read that must not hang forever if a daemon accepts
+    /// the connection but never writes a snapshot.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)
+    }
+
+    /// `None` means the daemon closed the connection, a read error occurred
+    /// (logged to stderr before returning; see `had_error`), or a read
+    /// timeout set with `set_read_timeout` elapsed (see `timed_out`).
     pub fn next_snapshot(&mut self) -> Option<Result<Snapshot, ProtoError>> {
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => None,
             Ok(_) => Some(decode(&line)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                // Only reachable when the caller has set a read timeout: a
+                // socket left at the default (`wisp-hud`'s only mode) never
+                // produces this. Not printed here — the caller is the one
+                // that knows why it set a timeout and what to tell the user
+                // about it (`wisp status` has its own message).
+                self.timed_out = true;
+                None
+            }
             Err(e) => {
                 // No process name: every binary prefixes its own stderr, and
                 // this crate now has more than one consumer.
@@ -48,6 +73,13 @@ impl SnapshotStream {
     /// of printing the former unconditionally after every `None`.
     pub fn had_error(&self) -> bool {
         self.had_error
+    }
+
+    /// True once `next_snapshot` has returned `None` because a read timeout
+    /// set with `set_read_timeout` elapsed, rather than a clean EOF or
+    /// another read error.
+    pub fn timed_out(&self) -> bool {
+        self.timed_out
     }
 }
 
@@ -143,5 +175,56 @@ mod tests {
         while let Some(item) = stream.next_snapshot() {
             let _ = item;
         }
+    }
+
+    #[test]
+    fn a_read_timeout_gives_up_instead_of_hanging() {
+        let socket = TempSocket::new("timeout");
+        let listener = UnixListener::bind(socket.path()).unwrap();
+        // Accept and never write. The thread outlives the assertions below —
+        // this test does not join it, and does not need to: dropping the
+        // listener's accepted socket at process exit is fine.
+        std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            drop(sock);
+        });
+
+        let mut stream = connect(socket.path()).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = stream.next_snapshot();
+        let elapsed = started.elapsed();
+
+        assert!(result.is_none());
+        assert!(stream.timed_out(), "expected the timeout outcome, not EOF or a read error");
+        assert!(!stream.had_error());
+        assert!(
+            elapsed < std::time::Duration::from_millis(800),
+            "took {elapsed:?}, should give up near the 200 ms timeout"
+        );
+    }
+
+    #[test]
+    fn no_timeout_set_still_reads_a_line() {
+        let socket = TempSocket::new("no-timeout");
+        let listener = UnixListener::bind(socket.path()).unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            // A short delay before writing: proof that a stream with no
+            // timeout set keeps waiting rather than giving up early, the
+            // behaviour `wisp-hud` depends on.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let _ = sock.write_all(
+                b"{\"v\":3,\"seq\":1,\"ts\":\"t\",\"lines_ingested\":0,\"session_kills\":0}\n",
+            );
+        });
+
+        let mut stream = connect(socket.path()).unwrap();
+        let snap = stream.next_snapshot().unwrap().unwrap();
+        assert_eq!(snap.seq, 1);
+        assert!(!stream.timed_out());
+        assert!(!stream.had_error());
     }
 }

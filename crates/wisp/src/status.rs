@@ -5,8 +5,16 @@
 //! in `wisp-proto` rather than in the HUD: `socat - <socket>` was always a
 //! complete diagnostic, and this is that with the JSON already taken apart.
 
+use std::time::Duration;
 use wisp_proto::client::connect;
 use wisp_proto::{encode, Confidence, Encounter, MeterRow, Snapshot, Timer};
+
+/// How long a connected socket is given to produce its first snapshot before
+/// `status` gives up. The same figure `wisp run` gives a daemon to start
+/// listening at all (`READY` in `run.rs`), reused here for the next thing that
+/// can go quiet: a daemon that accepted the connection but is stuck or has
+/// wedged before writing anything.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Connect, read one snapshot, print it, and return the status `main` exits
 /// with.
@@ -22,6 +30,14 @@ pub fn status(json: bool) -> i32 {
             return 1;
         }
     };
+    // Unlike `wisp-hud`, which legitimately waits as long as the daemon stays
+    // quiet, this is a one-shot read: without a timeout, a daemon that
+    // accepts the connection and then never writes would hang `wisp status`
+    // forever.
+    if let Err(e) = stream.set_read_timeout(Some(SNAPSHOT_TIMEOUT)) {
+        eprintln!("wisp: could not set a read timeout on {}: {e}", path.display());
+        return 1;
+    }
     match stream.next_snapshot() {
         Some(Ok(snapshot)) => {
             if json {
@@ -39,6 +55,13 @@ pub fn status(json: bool) -> i32 {
         // `next_snapshot` has already said which, on stderr, in its own words.
         Some(Err(e)) => {
             eprintln!("wisp: {e}");
+            1
+        }
+        None if stream.timed_out() => {
+            eprintln!(
+                "wisp: {}: the daemon accepted the connection but sent no snapshot in 5 s",
+                path.display()
+            );
             1
         }
         None => {
