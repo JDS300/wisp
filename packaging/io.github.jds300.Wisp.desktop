@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Wisp
+Comment=EverQuest log parser and in-game overlay for Linux and Steam Deck
+Icon=io.github.jds300.Wisp
+Exec=wisp run
+Terminal=false
+Categories=Game;Utility;
+NoDisplay=false
