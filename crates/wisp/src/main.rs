@@ -91,19 +91,29 @@ fn dispatch(command: Command) -> i32 {
 /// line is the one `wispd` and `wisp-hud` say about the same file: the program
 /// name differs and nothing after it does. It is never fatal — Wisp runs on its
 /// defaults with no config file at all, so it runs on them with a broken one.
+///
+/// Every subcommand that reads the config at all goes through here (`run`,
+/// `status`, `doctor`, and `config show`), so an unknown key is reported once,
+/// in the order the file lists it, the same way `wispd` and `wisp-hud` report
+/// one from the same file — a typo'd key should not be visible only through
+/// `config show`'s own `# unknown:` line.
 fn config_or_report() -> Config {
     // No path means nowhere to look, which is an empty config rather than an
     // error: `config path` is where a missing variable gets named.
     let Ok(path) = wisp_config::paths::config_path() else {
         return Config::default();
     };
-    match Config::load(&path) {
+    let config = match Config::load(&path) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("wisp: ignoring unreadable config {}: {e}", path.display());
             Config::default()
         }
+    };
+    for name in config.unknown() {
+        eprintln!("wisp: ignoring unknown config key: {name}");
     }
+    config
 }
 
 /// One labelled line of a report: the label padded to ten columns and a space,

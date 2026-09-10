@@ -728,6 +728,39 @@ fn an_unreadable_config_is_reported_once_and_ignored() {
     assert!(stdout.contains("kills:"), "{stdout}");
 }
 
+// ---------------------------------------------------------------------------
+// An unknown config key
+// ---------------------------------------------------------------------------
+
+#[test]
+fn doctor_reports_an_unknown_config_key_once_on_stderr() {
+    let s = scratch("doctor-unknown-key");
+    // `logs_dir` is a key doctor understands, but an empty directory resolves
+    // no log, so this is the same exit code as
+    // `doctor_reports_a_missing_log_file_and_exits_1`'s `--logs-dir` case: the
+    // unknown key must not change what doctor decides about the log.
+    let logs = s.root.join("Logs");
+    fs::create_dir_all(&logs).unwrap();
+    s.write_config(&format!("logs_dir = {}\ncolour = blue\n", logs.display()));
+
+    let out = s.command(&wisp()).arg("doctor").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(stderr, "wisp: ignoring unknown config key: colour\n", "{stderr}");
+
+    // A config with no unknown keys prints no such line. `status` goes through
+    // the same loader (`config_or_report` in `crates/wisp/src/main.rs`) as
+    // `doctor`, so one test of the loader's behaviour covers both.
+    let s = scratch("doctor-no-unknown-key");
+    let logs = s.root.join("Logs");
+    fs::create_dir_all(&logs).unwrap();
+    s.write_config(&format!("logs_dir = {}\n", logs.display()));
+    let out = s.command(&wisp()).arg("doctor").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(stderr, "", "{stderr}");
+}
+
 #[test]
 fn config_set_refuses_to_overwrite_a_file_it_cannot_read() {
     let s = scratch("config-set-unreadable");
