@@ -5,6 +5,8 @@
 //! debuggability: `socat - $XDG_RUNTIME_DIR/wisp/wispd.sock` is a complete
 //! diagnostic tool, and the boundary can be exercised without a renderer.
 
+pub mod client;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

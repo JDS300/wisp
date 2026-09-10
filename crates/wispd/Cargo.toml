@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+wisp-config = { path = "../wisp-config" }
 wisp-proto = { path = "../wisp-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }

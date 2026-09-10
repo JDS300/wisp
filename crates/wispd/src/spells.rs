@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 
 pub const SPELLS_FILE: &str = "spells_us.txt";
@@ -197,20 +197,6 @@ impl SpellTable {
     }
 }
 
-/// The log lives in `<install>/Logs/`; the spell files live in `<install>/`.
-pub fn spells_dir_from_log(log: &Path) -> Option<PathBuf> {
-    let logs_dir = log.parent()?;
-    let is_logs = logs_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.eq_ignore_ascii_case("logs"))
-        .unwrap_or(false);
-    if !is_logs {
-        return None;
-    }
-    logs_dir.parent().map(Path::to_path_buf)
-}
-
 fn parse_int(s: &str, file: &str, line: usize, what: &str) -> Result<i64, SpellsError> {
     let v = if s.is_empty() { "0" } else { s };
     // Integer fields are integers on the current client; accept "3000.0"
@@ -358,16 +344,6 @@ mod tests {
         let spells = row(9, "Silent", 1000, "3", 0) + "\n";
         let t = SpellTable::parse(&spells, &strings_text()).unwrap();
         assert_eq!(t.get("Silent").unwrap().lands_as, None);
-    }
-
-    #[test]
-    fn the_install_dir_is_the_parent_of_the_logs_dir() {
-        let log = Path::new("/games/EverQuest Legends/Logs/eqlog_Daggo_freeport.txt");
-        assert_eq!(
-            spells_dir_from_log(log),
-            Some(PathBuf::from("/games/EverQuest Legends"))
-        );
-        assert_eq!(spells_dir_from_log(Path::new("/tmp/eqlog_x.txt")), None);
     }
 
     /// Against the real client. Skipped unless WISP_EQL_DIR is set; run with

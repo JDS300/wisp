@@ -84,6 +84,51 @@ the usual fixes for that on Linux (winecfg fullscreen capture, or gamescope's
 to a pointer grab; something that never wants them cannot. Configuration lives
 in the CLI and a config file instead.
 
+## Installing
+
+Two prebuilt artifacts — the tarball and the AppImage — plus a local Flatpak
+build, which compiles the workspace with cargo inside the SDK and needs the
+repository checked out:
+
+- **Tarball + `install.sh`.** Download `wisp-<version>-x86_64-linux.tar.gz`
+  from a release, extract it, and run `./install.sh`. It installs the three
+  binaries and the desktop entry, icon and metainfo under `~/.local` by
+  default; `--prefix <dir>` installs elsewhere, and `--uninstall` removes
+  exactly what was installed and nothing else.
+- **AppImage.** Download `Wisp-<version>-x86_64.AppImage`, `chmod +x` it, and
+  run it. It needs the kernel's FUSE interface (`/dev/fuse`), not the
+  `libfuse2` package; where FUSE isn't available, `--appimage-extract-and-run`
+  (or `APPIMAGE_EXTRACT_AND_RUN=1`) runs it without mounting at all.
+- **Flatpak, built locally from a checkout.** `packaging/flatpak/build.sh`
+  builds and installs it with `flatpak-builder`. The first run downloads
+  `org.flatpak.Builder` itself plus the `org.freedesktop.Platform` and `Sdk`
+  25.08 and the `rust-stable` extension — four downloads, since none of them
+  is installed on a fresh machine.
+
+First run, whichever artifact you used:
+
+```
+wisp config set logs_dir <the game's Logs directory>
+wisp run
+```
+
+With the AppImage, `wisp` isn't on `PATH` — substitute its own path for
+`wisp` in both commands: `./Wisp-<version>-x86_64.AppImage config set logs_dir …`
+then `./Wisp-<version>-x86_64.AppImage run`.
+
+`wisp run -- %command%` works as a Steam or Lutris launch option, the same
+convention `mangohud %command%` uses. If it doesn't work, run `wisp doctor`
+— it reports the config path, which log it resolved and how, whether the
+client's spell files were found, and which overlay backend it would choose
+and why.
+
+**The AppImage, not the Flatpak, is the artifact for wrapping a gamescope
+launch on the desktop.** A Flatpak's `--socket=x11` binds in only the X11
+socket named by `DISPLAY` at launch, so it can never follow an XWayland that
+starts later — such as gamescope's, when the game launches after the
+Flatpak does. On a handheld Game Mode session `DISPLAY` is already
+gamescope's from the start, so the Flatpak is natural there instead.
+
 ## Status
 
 | Spec | Subject | State |
@@ -92,7 +137,7 @@ in the CLI and a config file instead.
 | 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
 | 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — verified live over EverQuest on the desktop (mez timer: row on landing, warning at 10 s, critical at 5 s, cleared at expiry) · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
 | 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — verified live over EverQuest on the desktop (personal line tracking DPS, group rows without you); close, linger, zoning and HUD restart not specifically exercised · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
-| 4 | Packaging and distribution | Not started |
+| 4 | [Packaging and distribution](docs/specs/2026-09-09-spec-4-packaging.md) | Implemented — build, test, clippy, the musl static build, `packaging/release.sh` and the local Flatpak build verified locally; the first CI run on a pushed tag, the Flatpak's live checks against the game, and Milestone 6 (live over EverQuest Legends on the desktop) pending JDS300 · [implementation plan](docs/plans/2026-09-09-spec-4-packaging.md) |
 
 Spec 1's overlay backends and log parser are implemented and covered by
 automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and

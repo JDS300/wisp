@@ -5,6 +5,11 @@
 *.o
 *.so
 
+# flatpak-builder's build and state dirs (packaging/flatpak/build.sh);
+# a SIGKILL or crash mid-build can leave these behind at the repo root
+/.flatpak-build-*/
+/.flatpak-builder/
+
 # python
 __pycache__/
 *.py[cod]

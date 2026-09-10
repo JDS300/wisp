@@ -127,6 +127,28 @@ impl Tracker {
         self.pending.len()
     }
 
+    /// End the session and start a new one, keeping everything that was learned
+    /// rather than everything that was happening.
+    ///
+    /// Called when discovery switches to a different log — another character, or
+    /// another server — so it runs on a 250 ms poll tick and must not re-read
+    /// anything. The spell table is 73,975 rows and 38,211,219 bytes; parsing it
+    /// again per switch is not acceptable, and neither is losing the durations
+    /// measured from the last session, which are the difference between a seeded
+    /// guess and a real number.
+    ///
+    /// `stats` is kept deliberately: it describes this process's life rather than
+    /// one session, and the replay test accumulates it across a whole file.
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.active.clear();
+        self.last_time = None;
+        // The new log brings its own wall clock, so the zero everything internal
+        // is measured against has to be picked again from its first line.
+        self.epoch = None;
+        self.next_seq = 0;
+    }
+
     /// Feed one raw log line. Lines without a parseable timestamp are ignored.
     pub fn observe(&mut self, line: &str) {
         let Some(raw_now) = timestamp_text(line).and_then(parse_log_time) else {
@@ -581,6 +603,80 @@ mod tests {
         t.observe("You begin casting Sleep.");
         assert_eq!(t.pending_count(), 0);
         assert_eq!(t.last_time(), None);
+    }
+
+    #[test]
+    fn reset_clears_live_timers_and_pending_casts() {
+        let mut t = tracker();
+        t.observe(&at(0, "You begin casting Sleep VI."));
+        t.observe(&at(3, "a rat has been mesmerized."));
+        t.observe(&at(4, "You begin casting Calm.")); // pending, never lands
+        assert_eq!((t.active_count(), t.pending_count()), (1, 1));
+        assert_eq!(t.timers(4.0).len(), 1);
+
+        t.reset();
+
+        assert_eq!((t.active_count(), t.pending_count()), (0, 0));
+        assert!(t.timers(4.0).is_empty(), "no row outlives the session it was armed in");
+    }
+
+    #[test]
+    fn reset_keeps_the_spell_table_and_the_learned_samples() {
+        let mut t = tracker();
+        for i in 0..3 {
+            let b = i * 100;
+            t.observe(&at(b, "You begin casting Sleep VI."));
+            t.observe(&at(b + 3, "a rat has been mesmerized."));
+            t.observe(&at(b + 27, "Your Sleep spell has worn off of a rat."));
+        }
+        let samples = t.store().samples("Sleep", 6).to_vec();
+        assert_eq!(samples.len(), 3);
+        assert_eq!(t.store().measured("Sleep", 6), Some(24));
+
+        t.reset();
+
+        // Nothing learned is thrown away: the samples are still on the store
+        // and still enough to make a duration measured rather than seeded.
+        assert_eq!(t.store().samples("Sleep", 6), samples.as_slice());
+        assert_eq!(t.store().measured("Sleep", 6), Some(24));
+
+        // The table survived, which is the point of the exercise: `Calm` exists
+        // only in spells_us.txt, and `arm()` would panic on a table that had
+        // gone. Its 42 s comes from the table's own cap_ticks.
+        t.observe(&at(1000, "You begin casting Calm."));
+        t.observe(&at(1003, "Guard Drazden looks less aggressive."));
+        let now = t.last_time().unwrap() as f64;
+        let rows = t.timers(now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].spell.as_str(), rows[0].duration_ms), ("Calm", 42_000));
+        assert_eq!(rows[0].confidence, Confidence::Estimated, "Calm has no samples yet");
+
+        // And the store is live, not merely present: a spell that does have
+        // samples is armed from them straight after the reset.
+        t.observe(&at(1004, "You begin casting Sleep VI."));
+        t.observe(&at(1007, "a jeering gargoyle has been mesmerized."));
+        let rows = t.timers(t.last_time().unwrap() as f64);
+        assert_eq!(rows[0].spell, "Sleep", "soonest expiry first");
+        assert_eq!(rows[0].duration_ms, 24_000);
+        assert_eq!(rows[0].confidence, Confidence::Measured);
+    }
+
+    #[test]
+    fn reset_restarts_the_clock() {
+        let mut t = tracker();
+        t.observe(&at(0, "You begin casting Sleep VI."));
+        t.observe(&at(3, "a rat has been mesmerized."));
+        assert_eq!(t.last_time(), Some(3));
+
+        t.reset();
+
+        assert_eq!(t.last_time(), None, "the new session has observed nothing yet");
+        t.observe(&at(500, "You begin casting Sleep VI."));
+        assert_eq!(
+            t.last_time(),
+            Some(0),
+            "a fresh epoch: the new log's own wall clock is not carried over"
+        );
     }
 
     /// The acceptance replay. Skipped unless both variables are set:

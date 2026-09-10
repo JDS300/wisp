@@ -38,7 +38,7 @@ Sole git author JDS300, stdlib-only or pure data, no upstream imports.
 
 | Source file | Size | Basis | Ported |
 |---|---|---|---|
-| `spinips:tools/appimage_update_info.py` | 302 lines | Sole git author JDS300, added in `d16a2f1`. Imports `argparse`, `struct`, `sys`, `pathlib`, `tempfile`, `fnmatch` — stdlib only. | no |
+| `spinips:tools/appimage_update_info.py` | 302 lines | Sole git author JDS300, added in `d16a2f1`. Imports `argparse`, `struct`, `sys`, `pathlib`, `tempfile`, `fnmatch` — stdlib only. `appimagetool -u` writes the update-information string itself, so there is nothing to port. | no — declined 2026-09-09 |
 | `spinips:tools/scrape_debuff_spells.py` | 111 lines | Sole git author JDS300. Imports `json`, `re`, `subprocess`, `sys`, `time`, `pathlib`, `html` — stdlib only. | no |
 | `spinips:loremaster/tests/fixtures/debuff_spell_reference.json` | 87 entries, 19 KB | Data, not code. Scraped published facts plus durations measured from JDS300's own game logs. | no |
 
@@ -687,3 +687,28 @@ run good for now, to be revisited if something shows up:
 - Zoning clearing the panel at once.
 - Restarting `wisp-hud` mid-fight showing the same numbers.
 - The handheld (Steam Deck / Legion Go S) target, deferred by standing rule.
+
+### 2026-09-09 — Spec 4 design and packaging: sources consulted
+
+- **MangoHud / `mangohud %command%`** — product convention only (a launch
+  option that wraps a command), and MIT source is permitted by the charter
+  anyway. No source read for this.
+- **AppImage documentation** — `appimagetool`'s README at tag `1.9.1` for
+  `-u`, `--runtime-file` and the runtime download; the type-2 runtime's
+  README for the FUSE requirement. Both quoted in the Spec 4 plan's Global
+  Constraints.
+- **Flatpak documentation** — the sandbox's X11 socket binding and
+  `$XDG_RUNTIME_DIR/app/$FLATPAK_ID`, checked by experiment inside another
+  app's sandbox rather than taken on trust.
+- **`flatpak/flatpak-builder-tools`** — the cargo generator at commit
+  `1fc32195e3e60fe5c97f0af646dec7a99df5962b`, MIT declared in the file itself
+  (`__license__ = "MIT"`); the repository has no root `LICENSE` at that
+  commit, which is recorded rather than papered over. Tool used, nothing
+  vendored.
+- **`AppImage/type2-runtime`** — MIT, "Copyright (c) 2004-23 probonopd". Its
+  `runtime-x86_64` is embedded in every AppImage this project ships, which is
+  why it is recorded.
+- **`zsync`** — `LicenseRef-Artistic` per its Arch package (0.6.6-1.1). Tool
+  used at build time; nothing of it is in an artifact.
+- Not consulted: `itsspin/spinips`, `JDS300/spinips`, `EQBuddy`, and any
+  other parser's source. Spec 4 needed no behaviour from any of them.

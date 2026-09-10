@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+app-id: io.github.jds300.Wisp
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: wisp
+# Three finish-args and no --share=ipc: x11rb's PutImage path uses no shared
+# memory, so the sandbox does not need it. The generator's own
+# cargo/README.md example manifest lists --share=ipc and --socket=fallback-x11;
+# Wisp deliberately differs from that example — do not "fix" this back.
+finish-args:
+  - --socket=x11
+  - --socket=wayland
+  - --filesystem=host:ro
+modules:
+  - name: wisp
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/wisp/cargo
+    sources:
+      - cargo-sources.json # generated; the vendored registry crates
+      - type: dir
+        path: ../..
+        # Without skip:, flatpak-builder copies the whole checkout into the
+        # build directory, target/ included — gigabytes after a release
+        # build — plus dist/ and .git. This is the difference between a
+        # build and a non-build, not a tidy-up.
+        skip:
+          - target
+          - dist
+          - .git
+    build-commands:
+      - cargo build --release --offline
+      - install -Dm755 target/release/wisp /app/bin/wisp
+      - install -Dm755 target/release/wispd /app/bin/wispd
+      - install -Dm755 target/release/wisp-hud /app/bin/wisp-hud
+      - install -Dm644 packaging/io.github.jds300.Wisp.desktop /app/share/applications/io.github.jds300.Wisp.desktop
+      - install -Dm644 packaging/io.github.jds300.Wisp.svg /app/share/icons/hicolor/scalable/apps/io.github.jds300.Wisp.svg
+      - install -Dm644 packaging/io.github.jds300.Wisp.metainfo.xml /app/share/metainfo/io.github.jds300.Wisp.metainfo.xml

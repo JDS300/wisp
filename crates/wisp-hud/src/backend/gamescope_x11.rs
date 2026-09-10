@@ -9,31 +9,6 @@
 
 use crate::backend::x11_common::X11Surface;
 use crate::backend::{BackendError, Frame, OverlayBackend};
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::*;
-
-/// Names of every property on the X root window. Selection uses this to detect
-/// gamescope, whose XWayland root carries around seventeen GAMESCOPE_* entries.
-pub fn root_atom_names() -> Vec<String> {
-    let Ok((conn, screen_num)) = x11rb::connect(None) else {
-        return Vec::new();
-    };
-    let root = conn.setup().roots[screen_num].root;
-    let Ok(cookie) = conn.list_properties(root) else {
-        return Vec::new();
-    };
-    let Ok(reply) = cookie.reply() else {
-        return Vec::new();
-    };
-    reply
-        .atoms
-        .iter()
-        .filter_map(|&atom| {
-            let name = conn.get_atom_name(atom).ok()?.reply().ok()?.name;
-            String::from_utf8(name).ok()
-        })
-        .collect()
-}
 
 pub struct GamescopeX11Backend {
     width: u32,

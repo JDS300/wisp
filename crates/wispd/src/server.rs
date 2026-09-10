@@ -6,25 +6,9 @@
 
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 use wisp_proto::{encode, Snapshot};
-
-/// `$XDG_RUNTIME_DIR/wisp/wispd.sock`, falling back to `/run/user/<uid>`.
-pub fn socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // SAFETY: getuid() takes no arguments and cannot fail.
-            let uid = unsafe { getuid() };
-            PathBuf::from(format!("/run/user/{}", uid))
-        });
-    base.join("wisp").join("wispd.sock")
-}
-
-extern "C" {
-    fn getuid() -> u32;
-}
 
 pub struct Server {
     listener: UnixListener,
@@ -32,7 +16,26 @@ pub struct Server {
 }
 
 impl Server {
+    /// Bind `path`, refusing it if a daemon is already listening there.
+    ///
+    /// The refusal is a successful `connect`: a socket file proves nothing,
+    /// because a daemon that died mid-session leaves its file behind. Anything
+    /// that does *not* answer — no file at all, or a stale one nobody is
+    /// listening on — is removed and bound over, exactly as before, so a crash
+    /// still needs no clean-up by hand.
+    ///
+    /// Without this, a second `wispd` unlinked a running one's socket and took
+    /// its place: the first daemon kept reading the log and publishing to nobody,
+    /// and nothing said that it had been orphaned. `wisp run` checks the same
+    /// thing before it spawns anything and produces the better message; this is
+    /// the daemon's own half of that guard, and the two must agree.
     pub fn bind(path: &Path) -> io::Result<Server> {
+        if UnixStream::connect(path).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                path.display().to_string(),
+            ));
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -111,19 +114,64 @@ mod tests {
         }
     }
 
-    fn temp_socket(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("wisp-test-{}-{}.sock", name, std::process::id()));
-        let _ = std::fs::remove_file(&p);
-        p
+    /// A socket path of its own per test, removed when the test ends whether it
+    /// passed or panicked.
+    ///
+    /// The helper this replaced removed the path *before* binding and nothing
+    /// removed it after, so every run left one file behind per test: 668
+    /// `wisp-test-*.sock` files were counted under `/tmp` on the development box
+    /// on 2026-09-09. The pre-bind removal stays — a leftover from a killed run
+    /// still has to be cleared — and the guard is what stops the next one.
+    struct TempSocket {
+        path: std::path::PathBuf,
+    }
+
+    impl TempSocket {
+        fn new(name: &str) -> TempSocket {
+            let mut path = std::env::temp_dir();
+            path.push(format!("wisp-test-{}-{}.sock", name, std::process::id()));
+            let _ = fs::remove_file(&path);
+            TempSocket { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempSocket {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn bind_refuses_a_path_something_is_listening_on() {
+        let socket = TempSocket::new("live");
+        let listener = UnixListener::bind(socket.path()).unwrap();
+
+        // A second daemon must not take the socket from a running one, which is
+        // what unlinking whatever is at the path did.
+        let error = match Server::bind(socket.path()) {
+            Ok(_) => panic!("bind replaced a daemon that was listening"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert!(error.to_string().contains(&socket.path().display().to_string()), "{error}");
+
+        // Nothing was unlinked: the daemon that was there is still there and
+        // still answering. That is the whole of the guarantee.
+        assert!(UnixStream::connect(socket.path()).is_ok());
+        assert!(listener.accept().is_ok());
+        drop(listener);
     }
 
     #[test]
     fn new_client_receives_the_current_snapshot_immediately() {
-        let path = temp_socket("hello");
-        let mut server = Server::bind(&path).unwrap();
+        let socket = TempSocket::new("hello");
+        let mut server = Server::bind(socket.path()).unwrap();
 
-        let client = UnixStream::connect(&path).unwrap();
+        let client = UnixStream::connect(socket.path()).unwrap();
         server.accept_pending(&snapshot(1, 7));
 
         let mut reader = BufReader::new(client);
@@ -137,9 +185,9 @@ mod tests {
 
     #[test]
     fn broadcast_reaches_a_connected_client() {
-        let path = temp_socket("broadcast");
-        let mut server = Server::bind(&path).unwrap();
-        let client = UnixStream::connect(&path).unwrap();
+        let socket = TempSocket::new("broadcast");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let client = UnixStream::connect(socket.path()).unwrap();
         server.accept_pending(&snapshot(1, 0));
 
         let mut reader = BufReader::new(client);
@@ -155,9 +203,9 @@ mod tests {
 
     #[test]
     fn a_disconnected_client_does_not_kill_the_server() {
-        let path = temp_socket("drop");
-        let mut server = Server::bind(&path).unwrap();
-        let client = UnixStream::connect(&path).unwrap();
+        let socket = TempSocket::new("drop");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let client = UnixStream::connect(socket.path()).unwrap();
         server.accept_pending(&snapshot(1, 0));
         drop(client);
 
@@ -170,17 +218,19 @@ mod tests {
 
     #[test]
     fn bind_replaces_a_stale_socket_file() {
-        let path = temp_socket("stale");
-        std::fs::write(&path, b"not a socket").unwrap();
-        // Must not fail with EADDRINUSE.
-        let _server = Server::bind(&path).unwrap();
+        let socket = TempSocket::new("stale");
+        std::fs::write(socket.path(), b"not a socket").unwrap();
+        // Must not fail with EADDRINUSE: a file nobody is listening on is a
+        // leftover, not a live daemon, and refusing it would need a restart
+        // after every crash.
+        let _server = Server::bind(socket.path()).unwrap();
     }
 
     #[test]
     fn a_client_that_never_reads_is_dropped_rather_than_stalling_the_server() {
-        let path = temp_socket("slow-reader");
-        let mut server = Server::bind(&path).unwrap();
-        let client = UnixStream::connect(&path).unwrap();
+        let socket = TempSocket::new("slow-reader");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let client = UnixStream::connect(socket.path()).unwrap();
         server.accept_pending(&snapshot(1, 0));
 
         // Never read from `client`, so its kernel receive buffer (and this

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<component type="desktop-application">
+  <id>io.github.jds300.Wisp</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Wisp</name>
+  <summary>EverQuest log parser and in-game overlay for Linux and Steam Deck</summary>
+  <developer id="io.github.jds300"><name>JDS300</name></developer>
+  <url type="homepage">https://github.com/JDS300/wisp</url>
+  <content_rating type="oars-1.1"/>
+  <description>
+    <p>A light over the fight. Wisp reads the log EverQuest Legends already
+       writes and turns it into a small in-game overlay: kill counts, spell
+       timers, and a live encounter meter for damage and healing.</p>
+    <p>Three small binaries do the work: wispd tails the log headlessly, wisp
+       is the command-line launcher and diagnostic tool, and wisp-hud draws
+       the overlay by asking the compositor for a window on top, never by
+       touching the game's process or memory. Nothing is injected and no game
+       data ships with it.</p>
+  </description>
+  <launchable type="desktop-id">io.github.jds300.Wisp.desktop</launchable>
+  <releases><release version="0.1.0" date="2026-09-09"/></releases>
+  <provides><binary>wisp</binary><binary>wispd</binary><binary>wisp-hud</binary></provides>
+</component>

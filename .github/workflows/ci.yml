@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to the version on the development box, so -D warnings below
+      # is a deterministic gate rather than one that moves under floating
+      # stable. The first run on floating stable picked up 1.98.1 and its
+      # new clippy::chunks_exact_to_as_chunks lint at four test sites in
+      # crates/wisp-hud/src/text.rs; bumping this pin means fixing those first.
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.94.1
+          components: clippy
+
+      - run: rustup target add x86_64-unknown-linux-musl
+
+      # release.sh requires zsyncmake (package: zsync) on PATH, or
+      # appimagetool writes no .zsync file at all -- see the appimagetool
+      # README quote in the plan's Global Constraints. ubuntu-24.04 ships
+      # zsync today, so this is a no-op in the routine case and a safety
+      # net if that ever changes.
+      - run: command -v zsyncmake >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync)
+
+      # Two integration tests in crates/wisp/tests/cli.rs (the `wisp run`
+      # milestone tests) start wisp-hud, which needs a display. ubuntu-latest
+      # has none, so cargo test runs under Xvfb below.
+      - run: command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb)
+
+      - run: cargo build --workspace --locked
+
+      - run: xvfb-run -a cargo test --workspace --locked
+
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # No `cargo fmt --all --check` step: as measured 2026-09-10, 30 of
+      # the tree's 34 tracked .rs files are not rustfmt-clean, and
+      # reformatting is not this spec's business. A gate that fails on
+      # arrival teaches people to ignore gates.
+
+      # The Spec 3 replay guard does not run here: the frozen fixture lives
+      # outside the repository, under /mnt/Data4TB/..., and CI never has it.
+
+      # What the runner image already contains is not verified here, so
+      # these two validators only run when present. Task 6 already runs
+      # both locally, where both tools are present.
+      - name: desktop-file-validate (if available)
+        run: |
+          if command -v desktop-file-validate >/dev/null 2>&1; then
+            desktop-file-validate packaging/io.github.jds300.Wisp.desktop
+          else
+            echo "SKIP desktop-file-validate"
+          fi
+
+      - name: appstreamcli validate (if available)
+        run: |
+          if command -v appstreamcli >/dev/null 2>&1; then
+            appstreamcli validate --no-net packaging/io.github.jds300.Wisp.metainfo.xml
+          else
+            echo "SKIP appstreamcli"
+          fi
+
+      # release.sh downloads roughly 16 MB of pinned tooling (appimagetool
+      # plus the type-2 runtime) on every run, first-run caching
+      # notwithstanding, because a GitHub runner starts empty. Accepted for
+      # now: no actions/cache step, no mirror, no vendoring. If the cost
+      # ever becomes annoying, the fix is a cache keyed on the two
+      # SHA-256s, and that is a separate decision from this spec's.
+      - run: packaging/release.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/

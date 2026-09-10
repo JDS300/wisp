@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="42%" r="55%">
+      <stop offset="0%" stop-color="#8ad9ff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#8ad9ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="#14161c"/>
+  <circle cx="128" cy="108" r="70" fill="url(#glow)"/>
+  <path d="M 128 108 C 96 140, 78 170, 70 196 C 84 188, 100 178, 116 160"
+        fill="none" stroke="#8ad9ff" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="128" cy="108" r="9" fill="#f4fbff"/>
+</svg>
