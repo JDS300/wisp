@@ -61,11 +61,13 @@ pub struct Personal {
 /// One ranked row of a group meter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeterRow {
-    /// `you`, or the source as the log printed it; an owned warder or pet
-    /// is folded into its owner.
+    /// The source as the log printed it; an owned warder or pet is folded
+    /// into its owner. Never `you`: your numbers are the personal line.
     pub name: String,
     pub amount: u64,
     pub per_s: u64,
+    /// Always `false`. Group rows never include you, so this field can
+    /// never be set; kept in the wire format to avoid a version bump.
     pub is_you: bool,
 }
 
@@ -82,7 +84,8 @@ pub struct Encounter {
     pub active: bool,
     pub duration_s: u64,
     pub you: Personal,
-    /// At most 5 rows, amount descending; `you` always present if you dealt any.
+    /// At most 5 rows, amount descending; group members only, you are on
+    /// the personal line.
     pub damage: Vec<MeterRow>,
     /// At most 3 rows, amount descending.
     pub healing: Vec<MeterRow>,

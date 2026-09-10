@@ -53,6 +53,9 @@ pub struct EncounterStats {
     pub heal_outside_fight: u64,
     pub pet_announcements: u64,
     pub boundaries: u64,
+    pub group_member_lines: u64,
+    pub group_leaves: u64,
+    pub group_resets: u64,
 }
 
 /// One finished fight, for tests and replays. Rows are (name, amount),
@@ -112,24 +115,17 @@ fn rate(amount: u64, duration_s: u64) -> u64 {
     (amount as f64 / duration_s as f64).round() as u64
 }
 
-fn meter_rows(rows: &[(String, u64)], duration_s: u64, max: usize, force_you: bool) -> Vec<MeterRow> {
-    let mut out: Vec<MeterRow> = rows
-        .iter()
+/// Rows for group members only: `you` never appears (your numbers are the
+/// personal line), and a source not proven to be in `group` is dropped.
+fn meter_rows(rows: &[(String, u64)], duration_s: u64, max: usize, group: &HashSet<String>) -> Vec<MeterRow> {
+    rows.iter()
+        .filter(|(n, _)| n != "you" && group.contains(&n.to_lowercase()))
         .take(max)
-        .map(|(n, a)| MeterRow { name: n.clone(), amount: *a, per_s: rate(*a, duration_s), is_you: n == "you" })
-        .collect();
-    if force_you && !out.iter().any(|r| r.is_you) {
-        if let Some((n, a)) = rows.iter().find(|(n, _)| n == "you") {
-            if out.len() == max {
-                out.pop();
-            }
-            out.push(MeterRow { name: n.clone(), amount: *a, per_s: rate(*a, duration_s), is_you: true });
-        }
-    }
-    out
+        .map(|(n, a)| MeterRow { name: n.clone(), amount: *a, per_s: rate(*a, duration_s), is_you: false })
+        .collect()
 }
 
-fn to_encounter(f: &Fight, active: bool) -> Encounter {
+fn to_encounter(f: &Fight, active: bool, group: &HashSet<String>) -> Encounter {
     let d = f.duration();
     let you_dmg = f.damage.get("you").copied().unwrap_or(0);
     let you_heal = f.healing.get("you").copied().unwrap_or(0);
@@ -145,8 +141,8 @@ fn to_encounter(f: &Fight, active: bool) -> Encounter {
             hps: rate(you_heal, d),
             overheal: f.overheal.get("you").copied().unwrap_or(0),
         },
-        damage: meter_rows(&Fight::rows(&f.damage), d, MAX_DAMAGE_ROWS, true),
-        healing: meter_rows(&Fight::rows(&f.healing), d, MAX_HEALING_ROWS, false),
+        damage: meter_rows(&Fight::rows(&f.damage), d, MAX_DAMAGE_ROWS, group),
+        healing: meter_rows(&Fight::rows(&f.healing), d, MAX_HEALING_ROWS, group),
     }
 }
 
@@ -154,6 +150,8 @@ pub struct Tracker {
     player: String,
     pets: HashMap<String, i64>,
     mobs: HashSet<String>,
+    /// Lower-cased names the log has proven are in your group.
+    group: HashSet<String>,
     current: Option<Fight>,
     /// A finished fight and the tracker time until which it is shown.
     lingering: Option<(Fight, i64)>,
@@ -178,6 +176,7 @@ impl Tracker {
             player: player.to_lowercase(),
             pets: HashMap::new(),
             mobs: HashSet::new(),
+            group: HashSet::new(),
             current: None,
             lingering: None,
             stats: EncounterStats::default(),
@@ -208,6 +207,11 @@ impl Tracker {
     #[cfg(test)]
     pub fn pet_count(&self) -> usize {
         self.pets.len()
+    }
+
+    #[cfg(test)]
+    pub fn group_size(&self) -> usize {
+        self.group.len()
     }
 
     /// Seconds since the first timestamped line, on the tracker's own clock.
@@ -333,6 +337,18 @@ impl Tracker {
                 self.lingering = None;
                 self.stats.boundaries += 1;
             }
+            CombatEvent::GroupMember { name } => {
+                self.group.insert(name.to_lowercase());
+                self.stats.group_member_lines += 1;
+            }
+            CombatEvent::GroupLeave { name } => {
+                self.group.remove(&name.to_lowercase());
+                self.stats.group_leaves += 1;
+            }
+            CombatEvent::GroupReset => {
+                self.group.clear();
+                self.stats.group_resets += 1;
+            }
             CombatEvent::Taken { source, amount, kind } => {
                 self.mobs.insert(source.to_lowercase());
                 let f = self.touch(now, false).expect("damage opens a fight");
@@ -393,12 +409,13 @@ impl Tracker {
     pub fn encounter(&self, now_secs: f64) -> Option<Encounter> {
         if let Some(f) = &self.current {
             if now_secs <= (f.last + IDLE_SECS) as f64 {
-                return Some(to_encounter(f, true));
+                return Some(to_encounter(f, true, &self.group));
             }
-            return (now_secs <= (f.last + IDLE_SECS + LINGER_SECS) as f64).then(|| to_encounter(f, false));
+            return (now_secs <= (f.last + IDLE_SECS + LINGER_SECS) as f64)
+                .then(|| to_encounter(f, false, &self.group));
         }
         match &self.lingering {
-            Some((f, until)) if now_secs <= *until as f64 => Some(to_encounter(f, false)),
+            Some((f, until)) if now_secs <= *until as f64 => Some(to_encounter(f, false, &self.group)),
             _ => None,
         }
     }
@@ -447,9 +464,7 @@ mod tests {
         assert_eq!((e.you.damage, e.you.dps), (400, 80));
         assert_eq!((e.you.taken, e.you.taken_ps), (50, 10));
         assert_eq!((e.you.healing, e.you.hps, e.you.overheal), (40, 8, 20));
-        assert_eq!(e.damage.len(), 1);
-        assert!(e.damage[0].is_you);
-        assert_eq!(e.damage[0].name, "you");
+        assert!(e.damage.is_empty(), "no you row: your numbers are the personal line, and nobody else is known to be in your group");
     }
 
     #[test]
@@ -508,15 +523,17 @@ mod tests {
     fn players_are_ranked_and_mobs_are_not_sources() {
         let mut t = tracker();
         feed(&mut t, &[
-            (0, "You kick a rat for 100 points of damage."),
-            (1, "Serenitee slashes a rat for 500 points of damage."),
-            (2, "Misery hit a rat for 250 points of magic damage by Bolt."),
-            (3, "A rat bites Serenitee for 900 points of damage."),
-            (4, "Guard Xyxax slashes Zaiv for 800 points of damage."),
+            (0, "Serenitee has joined the group."),
+            (1, "Misery tells the group, 'inc'"),
+            (2, "You kick a rat for 100 points of damage."),
+            (3, "Serenitee slashes a rat for 500 points of damage."),
+            (4, "Misery hit a rat for 250 points of magic damage by Bolt."),
+            (5, "A rat bites Serenitee for 900 points of damage."),
+            (6, "Guard Xyxax slashes Zaiv for 800 points of damage."),
         ]);
-        let e = t.encounter(4.0).unwrap();
+        let e = t.encounter(6.0).unwrap();
         let names: Vec<_> = e.damage.iter().map(|r| (r.name.as_str(), r.amount)).collect();
-        assert_eq!(names, vec![("Serenitee", 500), ("Misery", 250), ("you", 100)]);
+        assert_eq!(names, vec![("Serenitee", 500), ("Misery", 250)], "no you row: your numbers are the personal line");
         assert_eq!(t.stats().dmg_out_melee, 600);
         assert_eq!(t.stats().dmg_out_spell, 250);
     }
@@ -542,13 +559,14 @@ mod tests {
     fn a_warder_belongs_to_its_owner() {
         let mut t = tracker();
         feed(&mut t, &[
-            (0, "Jennie`s warder claws a rat for 40 points of damage."),
-            (1, "Jennie slashes a rat for 10 points of damage."),
-            (2, "Daggo`s warder claws a rat for 7 points of damage."),
+            (0, "Jennie has joined the group."),
+            (1, "Jennie`s warder claws a rat for 40 points of damage."),
+            (2, "Jennie slashes a rat for 10 points of damage."),
+            (3, "Daggo`s warder claws a rat for 7 points of damage."),
         ]);
-        let e = t.encounter(2.0).unwrap();
+        let e = t.encounter(3.0).unwrap();
         let names: Vec<_> = e.damage.iter().map(|r| (r.name.as_str(), r.amount)).collect();
-        assert_eq!(names, vec![("Jennie", 50), ("you", 7)]);
+        assert_eq!(names, vec![("Jennie", 50)], "no you row: your pet's damage is yours, on the personal line");
         assert_eq!(t.stats().own_pet_dmg, 7);
     }
 
@@ -556,33 +574,79 @@ mod tests {
     fn a_named_mob_becomes_a_mob_once_it_touches_you() {
         let mut t = tracker();
         feed(&mut t, &[
-            (0, "Xicotl slashes Zaiv for 100 points of damage."),
-            (1, "Xicotl slashes YOU for 20 points of damage."),
-            (2, "Xicotl slashes Zaiv for 100 points of damage."),
+            (0, "Xicotl has joined the group."),
+            (1, "Xicotl slashes Zaiv for 100 points of damage."),
+            (2, "Xicotl slashes YOU for 20 points of damage."),
+            (3, "Xicotl slashes Zaiv for 100 points of damage."),
         ]);
-        let e = t.encounter(2.0).unwrap();
+        let e = t.encounter(3.0).unwrap();
         assert_eq!(e.damage.iter().find(|r| r.name == "Xicotl").map(|r| r.amount), Some(100), "counted until it hit you, not after");
         assert_eq!(e.you.taken, 20);
     }
 
     #[test]
-    fn rows_are_capped_and_you_are_always_in_the_damage_rows() {
+    fn rows_are_capped_to_group_members() {
         let mut t = tracker();
-        let lines: Vec<(i64, String)> = (0..7)
-            .map(|i| (i, format!("Player{i} slashes a rat for {} points of damage.", 1000 - i)))
-            .chain(std::iter::once((8, "You kick a rat for 1 points of damage.".to_string())))
-            .chain((9..12).map(|i| (i, format!("Healer{i} healed himself for {} hit points.", 100 - i))))
-            .chain(std::iter::once((13, "Player0 healed himself for 1 hit points.".to_string())))
-            .collect();
+        // Join Player0-Player6 and Healer9-Healer11 first, so every source
+        // below has proven membership; the base offset keeps the joins
+        // strictly before the damage and heals that follow.
+        let mut lines: Vec<(i64, String)> = (0..7).map(|i| (i, format!("Player{i} has joined the group."))).collect();
+        lines.extend((0..3).map(|j| (7 + j, format!("Healer{} has joined the group.", 9 + j))));
+        const BASE: i64 = 10;
+        lines.extend((0..7).map(|i| (BASE + i, format!("Player{i} slashes a rat for {} points of damage.", 1000 - i))));
+        lines.push((BASE + 8, "You kick a rat for 1 points of damage.".to_string()));
+        lines.extend((9..12).map(|i| (BASE + i, format!("Healer{i} healed himself for {} hit points.", 100 - i))));
+        lines.push((BASE + 13, "Player0 healed himself for 1 hit points.".to_string()));
         for (s, b) in &lines {
             t.observe(&at(*s, b));
         }
-        let e = t.encounter(13.0).unwrap();
+        let e = t.encounter((BASE + 13) as f64).unwrap();
         assert_eq!(e.damage.len(), MAX_DAMAGE_ROWS);
-        assert!(e.damage.last().unwrap().is_you, "you replace the last row when outside the top");
-        assert_eq!(e.damage[0].name, "Player0");
+        assert!(!e.damage.iter().any(|r| r.is_you), "no you row: your numbers are the personal line");
+        let names: Vec<_> = e.damage.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["Player0", "Player1", "Player2", "Player3", "Player4"]);
         assert_eq!(e.healing.len(), MAX_HEALING_ROWS);
         assert_eq!(e.healing[0].name, "Healer9");
+    }
+
+    #[test]
+    fn nobody_known_means_no_group_rows() {
+        let mut t = tracker();
+        feed(&mut t, &[
+            (0, "You kick a rat for 100 points of damage."),
+            (1, "Serenitee slashes a rat for 500 points of damage."),
+        ]);
+        let e = t.encounter(1.0).unwrap();
+        assert!(e.damage.is_empty(), "nobody is proven to be in the group");
+        assert_eq!(e.you.damage, 100, "your personal numbers are still present");
+    }
+
+    #[test]
+    fn leaving_removes_a_row() {
+        let mut t = tracker();
+        feed(&mut t, &[
+            (0, "Serenitee has joined the group."),
+            (1, "Serenitee slashes a rat for 500 points of damage."),
+            (2, "Serenitee has left the group."),
+        ]);
+        let e = t.encounter(2.0).unwrap();
+        assert!(e.damage.is_empty(), "Serenitee left the group and no longer gets a row");
+        assert_eq!(t.stats().group_leaves, 1);
+        assert_eq!(t.group_size(), 0);
+    }
+
+    #[test]
+    fn joining_a_group_forgets_the_old_one() {
+        let mut t = tracker();
+        feed(&mut t, &[
+            (0, "Serenitee has joined the group."),
+            (1, "Serenitee slashes a rat for 500 points of damage."),
+            (2, "You have joined the group."),
+        ]);
+        let e = t.encounter(2.0).unwrap();
+        assert!(e.damage.is_empty(), "the reset cleared the old group's membership");
+        assert_eq!(t.stats().group_resets, 1);
+        assert_eq!(t.group_size(), 0);
     }
 
     #[test]
@@ -628,9 +692,13 @@ mod tests {
                 heal_outside_fight: 259121,
                 pet_announcements: 4890,
                 boundaries: 971,
+                group_member_lines: 40,
+                group_leaves: 4,
+                group_resets: 7,
             }
         );
         assert_eq!(t.pet_count(), 91);
+        assert_eq!(t.group_size(), 0, "the group is empty again at end of file");
         let h = t.history();
         assert_eq!(h.len(), 2524);
         let mut durs: Vec<u64> = h.iter().map(|f| f.duration_s).collect();
