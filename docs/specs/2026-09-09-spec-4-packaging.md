@@ -308,12 +308,15 @@ Platform, the Sdk and `rust-stable` are not installed there today (appendix).
 
 Both workflows run `rustup target add x86_64-unknown-linux-musl` before building.
 
-`ci.yml`, on push and pull request: `cargo build --workspace`,
-`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
-warnings`, then `packaging/release.sh` as a smoke run whose output is uploaded as
-a workflow artifact and not released. **No `cargo fmt --check`**: most of the
-tree is not rustfmt-clean today (appendix), and reformatting is not this spec's
-business.
+`ci.yml`, on push and pull request: `cargo build --workspace --locked`,
+`cargo test --workspace --locked` under `xvfb-run -a` — two integration tests
+start `wisp-hud` and need a display, which ubuntu-latest otherwise lacks —
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, then
+`packaging/release.sh` as a smoke run whose output is uploaded as a workflow
+artifact and not released. `--locked` on every cargo invocation keeps a
+`Cargo.lock` drift from re-resolving silently. **No `cargo fmt --check`**: most
+of the tree is not rustfmt-clean today (appendix), and reformatting is not this
+spec's business.
 
 `release.yml`, on a tag `v*`, declares `permissions: contents: write`, checks
 that the tag equals `v<Cargo version>`, runs `packaging/release.sh`, and creates

@@ -28,11 +28,16 @@ jobs:
       # net if that ever changes.
       - run: command -v zsyncmake >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync)
 
-      - run: cargo build --workspace
+      # Two integration tests in crates/wisp/tests/cli.rs (the `wisp run`
+      # milestone tests) start wisp-hud, which needs a display. ubuntu-latest
+      # has none, so cargo test runs under Xvfb below.
+      - run: command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb)
 
-      - run: cargo test --workspace
+      - run: cargo build --workspace --locked
 
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: xvfb-run -a cargo test --workspace --locked
+
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # No `cargo fmt --all --check` step: as measured 2026-09-10, 30 of
       # the tree's 34 tracked .rs files are not rustfmt-clean, and

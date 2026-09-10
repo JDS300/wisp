@@ -302,15 +302,15 @@ fn occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
-/// True — and loud about it — when there is no display, so the two tests that
-/// start the HUD skip rather than fail. Printed rather than silent: a skip must
-/// not be mistaken for a pass.
-fn no_display(test: &str) -> bool {
+/// Panics when there is no display, so the two tests that start the HUD fail
+/// loudly instead of silently skipping. A skip must not be mistaken for a
+/// pass: CI now provides Xvfb (see .github/workflows/ci.yml), so DISPLAY
+/// being unset here means the environment is missing it, not that the test
+/// should be excused.
+fn require_display(test: &str) {
     if std::env::var("DISPLAY").is_err() {
-        eprintln!("skipping {test}: DISPLAY is not set, and wisp-hud needs one");
-        return true;
+        panic!("{test}: DISPLAY is not set and wisp-hud needs one; run under xvfb-run -a");
     }
-    false
 }
 
 fn create_log(dir: &Path, name: &str, secs_ago: u64) -> PathBuf {
@@ -517,9 +517,7 @@ fn run_reports_a_daemon_that_exits_before_listening() {
 
 #[test]
 fn run_stub_sleep_starts_and_stops_everything() {
-    if no_display("run_stub_sleep_starts_and_stops_everything") {
-        return;
-    }
+    require_display("run_stub_sleep_starts_and_stops_everything");
     let s = scratch("run-stub-sleep");
     let mut running = s.spawn_words(&wisp(), RUN_STUB_FOR_ONE_SECOND);
 
@@ -538,9 +536,7 @@ fn run_stub_sleep_starts_and_stops_everything() {
 
 #[test]
 fn a_dying_wisp_child_leaves_the_command_running() {
-    if no_display("a_dying_wisp_child_leaves_the_command_running") {
-        return;
-    }
+    require_display("a_dying_wisp_child_leaves_the_command_running");
     let s = scratch("run-dying-child");
     let mut running = s.spawn_words(&wisp(), RUN_STUB_FOR_THREE_SECONDS);
     // The HUD is the signal that `wisp run` has passed its own readiness check:
