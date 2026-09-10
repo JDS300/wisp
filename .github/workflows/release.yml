@@ -48,6 +48,12 @@ jobs:
             exit 1
           fi
 
+      # The wisp CLI tests spawn target/debug/wispd and target/debug/wisp-hud.
+      # cargo test builds a bin-only package like wisp-hud only as a test
+      # harness, not as that plain binary, so it must be built first; ci.yml
+      # does the same.
+      - run: cargo build --workspace --locked
+
       # A tag on a commit whose tests fail must not publish a release;
       # release.sh only proves the workspace compiles for musl.
       - run: xvfb-run -a cargo test --workspace --locked
