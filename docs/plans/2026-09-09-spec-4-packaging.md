@@ -160,7 +160,8 @@ crates/
 │   └── client.rs                           connect(), SnapshotStream — moved from wisp-hud (T2)
 ├── wisp-config/                            NEW lib: no display dependency                  (T1)
 │   ├── Cargo.toml
-│   └── src/{lib,paths,config,spells,discover}.rs
+│   ├── src/{lib,paths,config,spells,discover}.rs
+│   └── src/source.rs                       LogSource, resolve_log_source    (T3 fix wave)
 ├── wisp-probe/                             NEW lib: detection only                         (T2)
 │   ├── Cargo.toml
 │   └── src/lib.rs                          BackendKind, choose, detect, Detection, the two probes (T2)
@@ -168,7 +169,7 @@ crates/
 │   ├── Cargo.toml                          += wisp-config                                  (T3)
 │   └── src/
 │       ├── main.rs                         source resolution, the poll loop's switch       (T3)
-│       ├── source.rs                       NEW: Source, Action, next_action                (T3)
+│       ├── source.rs                       NEW: Action, next_action                        (T3)
 │       ├── timers.rs                       += Tracker::reset()                             (T3)
 │       ├── server.rs                       socket_path() and the extern "C" leave          (T3)
 │       └── spells.rs                       spells_dir_from_log() leaves                    (T3)
@@ -249,7 +250,7 @@ impl Config {
     pub fn parse(text: &str) -> Config;
     pub fn load(path: &Path) -> io::Result<Config>;        // a missing file is Ok(Config::default())
     pub fn get(&self, key: Key) -> Option<&str>;           // the raw text; the reader parses it
-    pub fn path_value(&self, key: Key) -> Option<PathBuf>; // PathBuf::from the raw text
+    pub fn path_value(&self, key: Key) -> Option<PathBuf>; // PathBuf::from the raw text; an empty value is None
     pub fn unknown(&self) -> &[String];                    // reported once on stderr by each binary
 }
 
@@ -257,6 +258,8 @@ pub fn set_in_text(text: &str, key: Key, value: &str) -> String;
 ```
 
   `get` and `path_value` are the only two accessors. There is deliberately no `scale()` or `backend()`: a typed accessor would have to parse, and the parser needs to know where the value came from to blame it correctly in an error message, which is the *reader's* business (Task 4). The config file is **UTF-8 text** — `parse` takes a `&str` and cannot carry anything else — so `path_value` is `PathBuf::from(String)` and the OsStr-clean rule belongs to `args_os`, where the binaries already apply it. `Config::load` on a file that is not valid UTF-8 returns the `io::Error`; each binary reports it once on stderr and treats the config as empty.
+
+  **Added by Task 3's fix wave**, and recorded here so this crate's whole surface is in one place: a sixth module, `source`, holding `LogSource` and `resolve_log_source` (signatures in Task 3's Interfaces), and `path_value` treating an **empty value as unset**. Both exist so the precedence chain is written once: `wispd` and `wisp doctor` call it, and neither may restate it.
 
 - Produces, in `wisp_config::spells`:
 
@@ -487,6 +490,7 @@ EOF
 
 **Files:**
 - Modify: `crates/wispd/Cargo.toml` (`wisp-config = { path = "../wisp-config" }`)
+- Create: `crates/wisp-config/src/source.rs`, and `pub mod source;` in `crates/wisp-config/src/lib.rs`
 - Create: `crates/wispd/src/source.rs`
 - Create: `crates/wispd/tests/logs_dir.rs`
 - Modify: `crates/wispd/src/main.rs`
@@ -496,11 +500,23 @@ EOF
 
 **Interfaces:**
 - Consumes: `wisp_config::paths::{config_path, socket_path}`, `wisp_config::config::{Config, Key}`, `wisp_config::spells::{spells_dir_from_log, spells_dir_from_logs_dir}`, `wisp_config::discover::scan_logs_dir`.
+- Produces, `wisp_config::source` — **moved here by Task 3's fix wave**, so that `wisp doctor` can call the same precedence chain the daemon uses instead of restating it (Task 5):
+
+```rust
+pub enum LogSource { File(PathBuf), Dir(PathBuf) }
+
+pub fn resolve_log_source(
+    log_flag: Option<PathBuf>,
+    logs_dir_flag: Option<PathBuf>,
+    config: &Config,
+) -> Option<LogSource>;
+```
+
+  The chain is `--log` → `--logs-dir` → config `log` → config `logs_dir`, and `None` when nothing is set. It reads the two config keys through `Config::path_value`, which treats an **empty value as unset** — `log =` with nothing after it must not become a path of `""` and win over `logs_dir`.
+
 - Produces, `wispd::source`:
 
 ```rust
-pub enum Source { Fixed(PathBuf), Dir(PathBuf) }
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action { Keep, Open(PathBuf), Switch(PathBuf) }
 
@@ -519,7 +535,7 @@ impl Tracker { pub fn reset(&mut self); }
 
 **Behaviour, exactly as the spec fixes it:**
 
-1. Resolve the source: `--log` → `Source::Fixed`; else `--logs-dir` → `Source::Dir`; else config `log` → `Fixed`; else config `logs_dir` → `Dir`; else if `--stub`, the stub feed; else **exit 2** with, on stderr:
+1. Resolve the source with `wisp_config::source::resolve_log_source(log_flag, logs_dir_flag, &config)`: `Some(LogSource::File(p))` is a fixed log, `Some(LogSource::Dir(p))` is a directory to discover in, `None` falls through to `--stub` or to the error below. The chain — `--log` → `--logs-dir` → config `log` → config `logs_dir` — lives in that one function and is not restated in `main.rs`. With nothing to tail and no `--stub`, **exit 2** with, on stderr:
 
 ```
 wispd: no log to read
@@ -531,12 +547,14 @@ usage: wispd [--log <path> | --logs-dir <dir>] [--from-start] [--spells <dir>]
 
    with the real path from `config_path()`. When `config_path()` itself errors, name the missing variable instead. `--stub` reads neither `log` nor `logs_dir`, and does not error.
 2. Report unknown config keys once on stderr at startup: `wispd: ignoring unknown config key: <name>`. A `Config::load` that returns `Err` — a file that is not valid UTF-8, or one this process cannot read — is reported once at startup, in the same place, as `wispd: ignoring unreadable config <path>: <error>`, and the config is then treated as empty. **Never fatal:** an unreadable config stops the daemon no more than an absent one does.
-3. Spells directory: `--spells`, else config `spells_dir`, else derived — `spells_dir_from_logs_dir(dir)` for `Source::Dir`, `spells_dir_from_log(file)` for `Source::Fixed`. Unchanged behaviour when none resolves: timers disabled with the existing message, daemon still runs.
-4. `Source::Dir`, each tick: `scan_logs_dir`, then `next_action(current, scanned)`. On `Open` or `Switch`: drop the old `Tailer`, set `counters = Counters::default()`, rebuild the encounter tracker as `encounter::Tracker::new(&name)` with `name` from `encounter::player_name_from_log(&new_path)`, call `timers.reset()` if a tracker exists, and open with `Tailer::open(&new_path, from_start && !opened_anything_yet)`. `--from-start` therefore applies only to the very first file the process opens. An `Err` from `scan_logs_dir` on a tick — a directory that exists but cannot be read — is reported once on stderr as `wispd: cannot read <dir>: <error>` and then treated exactly like `Ok(None)`: `next_action` sees no newest file, the daemon keeps running and keeps publishing. Once means once per directory error, not once per tick.
+3. Spells directory: `--spells`, else config `spells_dir`, else derived — `spells_dir_from_logs_dir(dir)` for a `LogSource::Dir`, `spells_dir_from_log(file)` for a `LogSource::File`. Unchanged behaviour when none resolves: timers disabled with the existing message, daemon still runs.
+4. `LogSource::Dir`, each tick: `scan_logs_dir`, then `next_action(current, scanned)`. On `Open` or `Switch`: drop the old `Tailer`, set `counters = Counters::default()`, rebuild the encounter tracker as `encounter::Tracker::new(&name)` with `name` from `encounter::player_name_from_log(&new_path)`, call `timers.reset()` if a tracker exists, and open with `Tailer::open(&new_path, from_start && !opened_anything_yet)`. `--from-start` therefore applies only to the very first file the process opens. An `Err` from `scan_logs_dir` on a tick — a directory that exists but cannot be read — is reported once on stderr as `wispd: cannot read <dir>: <error>` and then treated exactly like `Ok(None)`: `next_action` sees no newest file, the daemon keeps running and keeps publishing. Once means once per directory error, not once per tick.
 5. On `Switch` (not on the first `Open`), say once on stderr: `wispd: newest log is now <path>; resetting the session`.
 6. While nothing is open: publish snapshots with `Counters::default()` (zero counters, empty `ts`), `timers: vec![]`, `encounter: None`, and say once on stderr `wispd: waiting for a log in <dir>`. Never repeat that line, and never exit.
 
 - [ ] **Step 1: Write the failing tests**
+
+`crates/wisp-config/src/source.rs`, unit tests: `the_log_flag_wins_over_everything`; `the_logs_dir_flag_wins_when_there_is_no_log_flag`; `config_log_is_used_when_neither_flag_is_set`; `config_logs_dir_is_the_last_resort`; `a_file_beats_a_directory_at_the_same_level` (both flags set, both keys set); `nothing_set_is_none`; `an_empty_config_value_is_unset_and_does_not_win` (`log =` with nothing after it falls through to `logs_dir`); `a_stub_run_with_no_source_resolves_to_none`.
 
 `crates/wispd/src/source.rs`, unit tests: `nothing_open_and_nothing_found_keeps_waiting`; `the_first_file_found_is_opened`; `the_same_file_again_is_kept`; `a_different_newest_file_is_a_switch`; `a_vanished_newest_file_keeps_the_current_one`.
 
@@ -559,12 +577,12 @@ Kill every spawned daemon in a guard struct's `Drop`, and remove the temp direct
 
 - [ ] **Step 2: Run and confirm they fail**
 
-Run: `cargo test -p wispd source` and `cargo test -p wispd --test logs_dir`
-Expected: FAIL to compile (`source` missing), then FAIL at runtime (`--logs-dir` unknown, so the binary exits 2 with the old usage text).
+Run the **integration suite first**: `cargo test -p wispd --test logs_dir`, and only then `cargo test -p wispd source`.
+Expected: the integration suite FAILs at runtime (`--logs-dir` unknown, so the binary exits 2 with the old usage text); the unit-test run FAILs to compile (`source` missing). The order is not cosmetic — the two failures cannot be observed the other way round, because once `source.rs` and its tests exist the bin crate no longer compiles, and a target that does not build cannot be run. See the runtime failure first, then introduce the compile failure.
 
 - [ ] **Step 3: Implement**
 
-`main.rs` keeps its existing shape: one `loop` over a 250 ms tick. Add the source resolution before the loop, a `current: Option<PathBuf>` beside the tailer, and the `next_action` dispatch at the top of each tick when the source is a `Dir`. Delete the local `socket_path()` in `server.rs` and `spells_dir_from_log()` in `spells.rs` along with their tests, and update the two call sites.
+`main.rs` keeps its existing shape: one `loop` over a 250 ms tick. Add the `resolve_log_source` call before the loop, a `current: Option<PathBuf>` beside the tailer, and the `next_action` dispatch at the top of each tick when the source is a `LogSource::Dir`. Delete the local `socket_path()` in `server.rs` and `spells_dir_from_log()` in `spells.rs` along with their tests, and update the two call sites.
 
 - [ ] **Step 4: The replay guard**
 
@@ -579,20 +597,29 @@ test encounter::tests::fixture_replay_matches_the_reference_exactly ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.45s
 ```
 
-Two things about that block will legitimately differ once this task is done, and neither is a failure: the `filtered out` count rises with every test the task adds (83 today, **91** with this task's eight new unit tests), and `tests/logs_dir.rs` adds a second `Running` block with its own result line, in which the two ignored replay tests do not appear. The timing line always differs. If either replay test *fails*, the switch work has changed a parsing rule. Stop, report both the failure and the diff, and do not adjust a number to make it pass — Appendix A and Spec 3 §6 are the arbiters.
+Two things about that block will legitimately differ once this task is done, and neither is a failure: the `filtered out` count moves with the tests this task adds **and removes**, and `tests/logs_dir.rs` adds a second `Running` block with its own result line, in which the two ignored replay tests do not appear. Task 3 measured **90 filtered out**: 83, plus the eight unit tests it added in `wispd/src/source.rs` and `timers.rs`, minus the one deleted with `spells_dir_from_log` (`the_install_dir_is_the_parent_of_the_logs_dir`, whose rule moved to `wisp-config` in Task 1). Task 3's fix wave then moved the precedence chain into `wisp_config::source`, whose tests live in the `wisp-config` package and so do **not** change this number — but if you add tests to `wispd` itself, count them instead of trusting this sentence. The timing line always differs. If either replay test *fails*, the switch work has changed a parsing rule. Stop, report both the failure and the diff, and do not adjust a number to make it pass — Appendix A and Spec 3 §6 are the arbiters.
 
 - [ ] **Step 5: The gates**
 
 The workspace gate, then the musl gate (all three binaries from Task 5 do not exist yet; check `wispd` and `wisp-hud`).
 
-Also verify by hand, once, against the real install:
+Also verify by hand, once, against the real install — **with `XDG_RUNTIME_DIR` pointed at a temp directory**, so the real socket is never touched:
 
 ```bash
-XDG_DATA_HOME=$(mktemp -d) cargo run -p wispd --release -- \
+r=$(mktemp -d) && d=$(mktemp -d)
+XDG_RUNTIME_DIR="$r" XDG_DATA_HOME="$d" cargo run -p wispd --release -- \
   --logs-dir '/mnt/Data4TB/Games/everquest/prefix/drive_c/users/Public/Daybreak Game Company/Installed Games/EverQuest Legends/Logs'
 ```
 
-Expected stderr, in this order: `wispd: listening on /run/user/1000/wisp/wispd.sock`, then the spells line naming that install and its eligible-spell count, and no `waiting for a log` line — it must pick `eqlog_Daggo_freeport.txt` (mtime 2026-09-09) over `eqlog_Daggo_rivervale.txt` (2026-08-12) on its own. Then `timeout 3 socat - "$XDG_RUNTIME_DIR/wisp/wispd.sock" | head -1` and check `lines_ingested` is 0 and `ts` is empty (it opens at the end of a file the game is not writing). Kill it, remove the temp dir and the socket, and paste both outputs.
+Expected stderr, in this order: `wispd: listening on <the temp dir>/wisp/wispd.sock`, then the spells line naming that install and its eligible-spell count, and no `waiting for a log` line — it must pick `eqlog_Daggo_freeport.txt` (mtime 2026-09-09) over `eqlog_Daggo_rivervale.txt` (2026-08-12) on its own. Then, in a second shell with the same `$r`:
+
+```bash
+timeout 3 socat - UNIX-CONNECT:"$r/wisp/wispd.sock" | head -1
+```
+
+and check `lines_ingested` is 0 and `ts` is empty (it opens at the end of a file the game is not writing). Kill the daemon, remove both temp dirs, and paste both outputs.
+
+Two reasons the temp `XDG_RUNTIME_DIR` is mandatory here rather than tidy. `socat - <path>` treats its argument as a file to open, not a socket to connect to; `UNIX-CONNECT:` is the address form that actually connects. And until Task 5 makes `Server::bind` refuse a path something is already listening on, `wispd` unlinks whatever is at the socket path before binding — so running this step against `/run/user/1000` while JDS300's own daemon is live silently orphans it. That is exactly what stopped Task 3 from running this step as first written.
 
 - [ ] **Step 6: Commit**
 
@@ -623,7 +650,7 @@ EOF
 - [ ] The exit-2 message names the real config path and the real command `wisp config set logs_dir <dir>`.
 - [ ] `Tracker::reset` does not touch `table` or `store`, and a test proves the samples survive.
 - [ ] The replay output in your report matches Step 4's two `ok` lines.
-- [ ] No test leaves a `wispd` process or a socket file behind: `pgrep -a wispd` is empty after `cargo test -p wispd`.
+- [ ] No scratch directory of the suite remains, and no daemon whose executable is under **this worktree's** `target/` remains: `pgrep -af "$PWD/target"` is empty after `cargo test -p wispd`. A developer's own `wispd`, started from another checkout or an installed artifact, is not this suite's leak — do not kill it, and do not "fix" the check by matching on the name alone.
 
 ---
 
@@ -723,9 +750,11 @@ EOF
 **Files:**
 - Create: `crates/wisp/Cargo.toml`, `src/main.rs`, `src/args.rs`, `src/run.rs`, `src/status.rs`, `src/doctor.rs`, `src/config_cmd.rs`, `tests/cli.rs`
 - Modify: `Cargo.toml` (root) — `members` gains `"crates/wisp"`
+- Modify: `crates/wispd/src/server.rs` — `Server::bind` refuses a path something is listening on
+- Modify: `crates/wispd/src/server.rs` and `crates/wisp-proto/src/client.rs` — the `temp_socket` leak, in both copies
 
 **Interfaces:**
-- Consumes: `wisp_config::{paths, config, discover::list_logs, spells}`, `wisp_probe::{detect, BackendKind}`, `wisp_proto::{client::connect, decode, Snapshot, PROTOCOL_VERSION}`.
+- Consumes: `wisp_config::{paths, config, source::resolve_log_source, discover::list_logs, spells}`, `wisp_probe::{detect, BackendKind}`, `wisp_proto::{client::connect, decode, Snapshot, PROTOCOL_VERSION}`.
 - Produces, `wisp::args` (pure, no I/O, all unit-tested):
 
 ```rust
@@ -791,7 +820,7 @@ scale:     48 (default)
 backend:   WlrLayerShell (DISPLAY :0 has no GAMESCOPE_* root property; zwlr_layer_shell_v1 advertised)
 ```
 
-  The `log` line names its source exactly: `--log flag`, `config log`, `config logs_dir, newest of N files` (N from `wisp_config::discover::list_logs`), or `none`. The `spells` line names its source the same way and says whether `spells_us.txt` exists.
+  The `log` line names its source exactly: `--log flag`, `config log`, `config logs_dir, newest of N files` (N from `wisp_config::discover::list_logs`), or `none`. It is derived by calling `wisp_config::source::resolve_log_source` with the same two flags and the same `Config` the daemon uses, and then `list_logs` for the count — **never by re-implementing the chain**, which is exactly why Task 3's fix wave moved the chain into `wisp-config`. The `spells` line names its source the same way and says whether `spells_us.txt` exists.
 
   **The `backend` line applies the HUD's precedence, not detection alone** — Task 4 made the backend `--backend`, else config `backend`, else `wisp_probe::detect()`, and a doctor that printed only detection would lie about what the HUD is going to do. With nothing set it prints the plain form above: `detect().kind` and `detect().reason()` in parentheses. With `--backend` or a config `backend` set it names the winner and its origin, and still reports what detection would have chosen, so a surprise is diagnosable:
 
@@ -804,11 +833,18 @@ backend:   PlainWindow (config backend = plain; detection would choose WlrLayerS
 - Every command that *reads* the config — `run`, `status`, `doctor`, `config show` — reports a `Config::load` `Err` once as `wisp: ignoring unreadable config <path>: <error>` and carries on with an empty config. None of them exits because of it, and none repeats the line. `config set` is the one exception, because it is a writer: a file it cannot read is a file it must not overwrite, so it prints that same line and exits **1** without writing anything, rather than replacing bytes it could not read with a single key.
 - `--version` and `version` both print `wisp <CARGO_PKG_VERSION>`. Bare `wisp` and any unknown command print usage on stderr and exit 2 — bare `wisp` does **not** mean `run`.
 
+**Two changes outside `crates/wisp`, both found by Task 3's run:**
+
+- **`Server::bind` refuses a live socket.** Today it unlinks whatever is at the path before binding, so a second `wispd` silently orphans a running one — the Task 3 agent found JDS300's own live daemon holding the real socket on the development box and could not run its Step 5 verbatim. `Server::bind` keeps its `io::Result<Server>` signature and first tries `UnixStream::connect(path)`; if something answers, it returns `Err` with `io::ErrorKind::AddrInUse` carrying the path, and `wispd`'s `main` matches that kind, prints `wispd: another daemon is listening on <path>` on stderr and exits **1** without unlinking anything. Any other connect outcome — no file there, or a stale socket nobody is listening on — proceeds exactly as today, so the existing stale-file recovery is not lost. Unit test in `server.rs`: `bind_refuses_a_path_something_is_listening_on` — bind a `UnixListener` at the temp path, assert `Server::bind` returns an `AddrInUse` error, and assert the original listener **still accepts a connection**, which is what proves nothing was unlinked. This is the daemon-side half of `wisp run`'s guard and the two must agree; the CLI's own check stays, because it produces the better message before anything is spawned.
+- **The test socket leak.** `temp_socket()` exists twice — in `wispd/src/server.rs` and in `wisp-proto/src/client.rs` — and both remove the path *before* binding with nothing removing it after, so every test run leaves one file behind per test: **668 `wisp-test-*.sock` files** were counted under `/tmp` on the development box on 2026-09-09. Replace the helper in both modules with a guard that hands out the path and removes it in `Drop`, and use it in every test in both modules. Keep the pre-bind `remove_file`: a leftover from a killed run still has to be cleared, and the guard is what stops the next one.
+
 - [ ] **Step 1: Write the failing tests**
 
 `src/args.rs` unit tests: `bare_wisp_is_usage`; `an_unknown_command_is_usage`; `version_in_both_forms`; `status_takes_an_optional_json_flag`; `config_path_show_and_set_parse`; `config_set_needs_two_arguments`; `config_set_refuses_an_unknown_key`; `split_at_double_dash_partitions_the_command`; `a_double_dash_with_nothing_after_it_is_no_command`; `every_wispd_flag_lands_in_the_wispd_list`; `every_hud_flag_lands_in_the_hud_list`; `stub_goes_to_wispd`; `an_unrecognised_flag_is_an_error_naming_it`; `a_value_flag_without_a_value_is_an_error` (three cases: the flag last, the flag followed by another flag, and a wispd value flag followed by a HUD one — each `Err` naming the flag that has no value); `flags_keep_their_values_next_to_them`; `non_utf8_values_survive_partitioning` (build the `OsString` from bytes).
 
 `src/run.rs` unit tests: `find_child_prefers_the_directory_of_the_current_exe`; `find_child_falls_back_to_path`; `wait_for_socket_is_false_for_a_path_nothing_listens_on` (a temp path, a 200 ms timeout); `wait_for_socket_is_true_once_a_listener_exists` (bind a `UnixListener` in the test).
+
+`crates/wispd/src/server.rs`, for the change described above: `bind_refuses_a_path_something_is_listening_on`, and — since the guard replaces the helper every test in that module uses — the four existing tests keep their names and assertions and only change how they get a path. Same in `crates/wisp-proto/src/client.rs` for its three.
 
 `src/status.rs` and `src/doctor.rs` unit tests over their formatting functions, given a hand-built `Snapshot`: `status_text_names_every_field`; `no_timers_prints_no_indented_lines`; `a_null_encounter_prints_fight_none`; `amounts_compact_as_the_hud_does`; `doctor_names_the_source_of_the_log`; `doctor_reports_a_missing_config_file`; `doctor_reports_the_backend_the_hud_will_actually_use` (a config `backend = plain` over a `Detection` that would choose `WlrLayerShell` prints the winner, its origin and what detection would have chosen); `doctor_refuses_an_unparseable_config_backend_as_the_hud_does`; `doctor_reports_the_effective_scale_and_its_origin` (flag, config, default 48).
 
@@ -823,14 +859,14 @@ backend:   PlainWindow (config backend = plain; detection would choose WlrLayerS
 - `status_without_a_daemon_exits_1_and_names_the_socket`;
 - `run_refuses_to_start_when_a_daemon_is_already_listening` — spawn `wispd --stub`, then `wisp run --stub`, assert exit 1 and that stderr names the socket path;
 - `run_stub_sleep_starts_and_stops_everything` — `wisp run --stub --backend plain -- sleep 1`; **skip with an `eprintln!` when `std::env::var("DISPLAY").is_err()`**, since the HUD needs a display and CI has none; when it runs, assert exit 0 and then assert `wisp status` exits 1, proving no daemon survived;
-- `a_dying_wisp_child_leaves_the_command_running` — DISPLAY-gated exactly like its sibling: `wisp run --stub --backend plain -- sleep 3`, find the daemon child with `pgrep -f 'wispd --stub'` scoped to this test's `XDG_RUNTIME_DIR` and kill it, assert `wisp run` is still alive while the `sleep` is, and that it exits **0** when the command ends. This is the spec's ruling that losing an overlay is no reason to close a game;
+- `a_dying_wisp_child_leaves_the_command_running` — DISPLAY-gated exactly like its sibling: `wisp run --stub --backend plain -- sleep 3`, find **this test's** daemon child and kill it, assert `wisp run` is still alive while the `sleep` is, and that it exits **0** when the command ends. Find it by scanning `/proc/*/environ` for this test's `XDG_RUNTIME_DIR`: `pgrep -f 'wispd --stub'` matches the command line only, so it would also match a developer's own stub daemon from another checkout, and killing that is not this test's business. This is the spec's ruling that losing an overlay is no reason to close a game;
 - `doctor_exits_1_and_prints_the_config_path_when_no_log_resolves`;
 - `doctor_exits_0_and_names_the_newest_file_when_logs_dir_is_set` — a temp dir with two `eqlog_*.txt` files whose mtimes are set with `File::set_modified`;
 - `an_unreadable_config_is_reported_once_and_ignored` — a temp `XDG_CONFIG_HOME` with non-UTF-8 bytes at **`$XDG_CONFIG_HOME/wisp/config`** (directory created by the test): `wisp doctor` still runs, exits 1 for the absent log, and its stderr carries `wisp: ignoring unreadable config <path>: <error>` exactly once, naming that path; `wisp status` against a stub daemon behaves the same way and still prints the snapshot;
 - `config_set_refuses_to_overwrite_a_file_it_cannot_read` — the same unreadable file: exit **1**, the same message, and the file's bytes unchanged afterwards;
 - `the_hud_refuses_a_bad_config_scale_with_exit_2` — spawn `env!("CARGO_BIN_EXE_wisp-hud")` with a temp `XDG_CONFIG_HOME` whose `wisp/config` holds `scale = not-a-number`, and assert exit **2** with stderr exactly `wisp-hud: invalid config scale: not-a-number`. This is the only automated test that reaches the HUD's refusal wiring, since Task 4 could test the message but not the process exit. **No display is needed** — the refusal happens before detection and attach — so it runs in CI and must not be DISPLAY-gated.
 
-Every spawned child is killed from a guard's `Drop`. `pgrep -a wispd` must be empty after the suite.
+Every spawned child is killed from a guard's `Drop`, and no scratch directory survives the suite.
 
 - [ ] **Step 2: Run and confirm they fail**
 
@@ -860,7 +896,7 @@ Expected: three lines, each containing `static-pie linked`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock crates/wisp
+git add Cargo.toml Cargo.lock crates/wisp crates/wispd crates/wisp-proto
 git commit -m "$(cat <<'EOF'
 Add wisp: run, status, doctor, config -- the CLI and launcher
 
@@ -871,6 +907,11 @@ ready rather than the socket file's existence, and with a command after
 option works; a Wisp child dying leaves the game running. doctor reports
 what would happen and why without starting anything, and calls the same
 detection the HUD calls rather than reimplementing it.
+
+wispd gains the other half of that guard: Server::bind now refuses a
+path something is already listening on instead of unlinking it, so a
+second daemon can no longer orphan a running one. Both copies of the
+temp_socket test helper become a guard that removes its path on drop.
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
@@ -884,9 +925,11 @@ EOF
 - [ ] `wisp run` forwards only the seven flags the spec lists, and an eighth is usage plus exit 2.
 - [ ] `git grep -n 'GAMESCOPE_\|zwlr_layer_shell_v1\|fn choose' crates/wisp` is **empty**: `doctor` calls `wisp_probe::detect()` and prints its `reason()`, so this crate states no detection rule of its own — not even in text it assembles itself.
 - [ ] `git grep -n '"layer-shell"\|"gamescope"\|"plain"' crates/wisp` is **empty** too: the three backend names are parsed by `wisp_probe::BackendKind::parse`, in `wisp-hud` and here alike.
+- [ ] `git grep -n 'LogsDir' crates/wisp/src/doctor.rs` shows only the origin label it prints (`config logs_dir`), never a precedence match: the chain belongs to `wisp_config::source::resolve_log_source`, which doctor calls.
 - [ ] `wait_for_socket` never calls `Path::exists`.
 - [ ] The unreadable-config message is identical in form in all three binaries — `wispd:`, `wisp-hud:` and `wisp:` differ, and nothing after the program name does.
-- [ ] No child process or socket file outlives the test suite.
+- [ ] No child process or socket file outlives the test suite: no scratch directory of the suite remains, and `pgrep -af "$PWD/target"` is empty — no daemon whose executable is under **this worktree's** `target/`. A developer's own `wispd` from another checkout or an installed artifact is not this suite's leak; do not kill it, and do not weaken the check to a name match.
+- [ ] No `wisp-test-*.sock` file is left behind: `ls /tmp | grep -c 'wisp-test'` is the same before and after `cargo test --workspace`, and both `temp_socket` guards remove their path on drop. The 668 already there are history, not yours; do not delete files you did not create.
 - [ ] The signal-handling limitation is written in a comment where the polling loop is.
 - [ ] SPDX header on all six `.rs` files.
 
@@ -1157,6 +1200,7 @@ EOF
 - [ ] The manifest installs the same desktop file, icon and metainfo that Task 6 put in `packaging/` — no second copy of any of them exists anywhere.
 - [ ] The SDK's `rustc --version` is in your report, and `rust-version` was added only if the build demanded it.
 - [ ] Instance B saw instance A's daemon; if it did not, the socket rule is wrong and nothing else in this task matters — report it before anything else.
+- [ ] Nothing is left running: `pgrep -af "$PWD/target"` is empty, and `flatpak ps` shows no `io.github.jds300.Wisp` instance — `check.sh` kills instance A. A developer's own daemon from another checkout is not this suite's leak; do not kill it.
 - [ ] SPDX headers on all three scripts and the YAML manifest.
 
 ---
@@ -1265,7 +1309,13 @@ No new code. This task is the record, and the record is the point of the charter
 
 **THIRD_PARTY.md** — a new "Packaging tooling" section recording, as *used, not vendored*: `appimagetool` 1.9.1 (MIT, fetched at a pinned SHA-256 into a cache outside the repository); `AppImage/type2-runtime` release `20251108` (MIT, **embedded in the AppImages we ship** — the one thing in this list that ends up inside an artifact, so record it as vendored-in-output rather than merely used, and note the runtime's own licence text is available at the URL in this plan); `flatpak-cargo-generator.py` from `flatpak/flatpak-builder-tools` (MIT by the file's own declaration; used to generate a committed JSON, never copied into the tree); `zsync` (Artistic per its distribution package; build-time only). Also record that `smithay-client-toolkit`'s `xkbcommon` feature was dropped, which removes `xkbcommon` from the dependency tree — the tree's shape is part of what a reader of this file needs.
 
-**`docs/specs/2026-09-09-spec-4-packaging.md`** — the Status line becomes implemented, in the wording the earlier specs use, naming what was verified automatically and what is pending JDS300. Do not touch anything else in the spec; if implementation contradicted it, report the contradiction instead of editing around it.
+**`docs/specs/2026-09-09-spec-4-packaging.md`** — exactly two edits, and no others. The Status line becomes implemented, in the wording the earlier specs use, naming what was verified automatically and what is pending JDS300. And §7 gains one new row, beside the existing `Tailer::poll` row, because Task 3's `an_unreadable_directory_does_not_kill_the_daemon` found a second behaviour of the same code that the spec does not yet record:
+
+```
+| **`Tailer::poll` re-stats the log by path every tick,** so a `Logs/` directory that loses its search permission freezes an open tailer while the daemon keeps publishing unchanged numbers. | Found by Task 3's `an_unreadable_directory_does_not_kill_the_daemon`. Accepted: the numbers stop moving rather than going wrong, the daemon stays alive and keeps publishing, and recovery is automatic when the mode returns. Recorded here for Spec 5, beside the row about reopening a replaced file. |
+```
+
+Anything else the implementation contradicted in the spec gets **reported, not edited around**.
 
 - [ ] **Step 1: Write the four documents**
 
@@ -1303,7 +1353,7 @@ Report: every command you ran with its output, every place the implementation di
 - [ ] The Tier A row is `no — declined 2026-09-09`, not `no`.
 - [ ] The type-2 runtime is recorded as ending up inside a shipped artifact; the other tools are recorded as used.
 - [ ] The README's Installing section does not tell anyone to build from source first.
-- [ ] The spec's Status line is the only change to the spec file: `git diff docs/specs/` shows one hunk.
+- [ ] The spec file changed in exactly two places — the Status line and the one new §7 risk row: `git diff docs/specs/` shows two hunks and nothing else.
 
 ---
 
@@ -1341,7 +1391,7 @@ Report: every command you ran with its output, every place the implementation di
 8. **`wisp doctor` prints more than the spec's list.** The spec enumerates version, config, log, spells, socket and backend; Task 5 adds a `scale:` line, and its `backend:` line reports the HUD's precedence (flag, config, detection) rather than detection alone, because a doctor that printed only detection would misreport what the HUD is about to do. Both came out of the Task 4 review. The spec's shorter list is not wrong, it is incomplete, and Task 9 should not "correct" the plan back to it.
 9. **`BackendKind::parse` and the two extra `Detection` fields are additions to the plan as first written**, made during Task 2 and Task 4 respectively. Task 2's Interfaces block records the six-field struct and the reason for the `*_connected` pair; Task 4 owns `parse`.
 
-**Type consistency.** `Key`, `Config`, `PathError` and the four `wisp_config` function families are defined once, in Task 1, and consumed unchanged by Tasks 3, 4 and 5 — `Config` exposes `get` and `path_value` only, so every reader parses the raw text itself and can blame the right source in its error. `BackendKind`, `choose`, `Detection` and `detect` are defined once, in Task 2, and consumed by `wisp-hud` (Tasks 2 and 4) and `wisp doctor` (Task 5); the `GAMESCOPE_` prefix rule and the `zwlr_layer_shell_v1` literal exist in one crate. `BackendKind::parse` is added in Task 4 and is the only place the three backend names are matched against text, for `wisp-hud` and `wisp doctor` alike. `SnapshotStream` is defined once, in Task 2, and consumed by `wisp status` (Task 5). `Source`, `Action` and `next_action` are Task 3's and nobody else's. `wisp_version()` is defined in Task 6 and sourced by Task 8's tag check. No task redefines anything another task produced; if you find yourself writing a second `socket_path`, stop.
+**Type consistency.** `Key`, `Config`, `PathError` and the five `wisp_config` function families are defined once, in Task 1 (`source` arriving in Task 3's fix wave), and consumed unchanged by Tasks 3, 4 and 5 — `Config` exposes `get` and `path_value` only, so every reader parses the raw text itself and can blame the right source in its error. `BackendKind`, `choose`, `Detection` and `detect` are defined once, in Task 2, and consumed by `wisp-hud` (Tasks 2 and 4) and `wisp doctor` (Task 5); the `GAMESCOPE_` prefix rule and the `zwlr_layer_shell_v1` literal exist in one crate. `BackendKind::parse` is added in Task 4 and is the only place the three backend names are matched against text, for `wisp-hud` and `wisp doctor` alike. `SnapshotStream` is defined once, in Task 2, and consumed by `wisp status` (Task 5). `LogSource` and `resolve_log_source` live in `wisp-config` — added by Task 3's fix wave — and are consumed by `wispd` (Task 3) and `wisp doctor` (Task 5), so the `--log` → `--logs-dir` → config chain exists once; `Action` and `next_action` are Task 3's and nobody else's. `wisp_version()` is defined in Task 6 and sourced by Task 8's tag check. No task redefines anything another task produced; if you find yourself writing a second `socket_path`, stop.
 
 ---
 
@@ -1360,7 +1410,7 @@ test encounter::tests::fixture_replay_matches_the_reference_exactly ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.45s
 ```
 
-Both tests assert rather than print, so the numbers live in the test bodies and Task 3 must keep them true. Two details of this block are pre-Task-3 facts that legitimately move: `83 filtered out` rises with every test the task adds, and the single `Running unittests src/main.rs` block gains a second one for `tests/logs_dir.rs` (Task 3, Step 4). The numbers are, in `crates/wispd/src/encounter.rs`'s `fixture_replay_matches_the_reference_exactly`: `encounters` 2524; `dmg_out` melee/spell/dot/shield 15198942/9082968/4622907/447208; `own_self_dmg` 18085260 and `own_pet_dmg` 5284285; `taken` melee/spell/dot/shield 1924867/709376/273054/257300; `heal_actual` 2364526 and `heal_over` 838539; `own_heal_actual`/`own_heal_over`/`own_hot_actual` 1875603/590911/355478; `heal_outside_fight` 259121; `pet_announcements` 4890 with `pet_count()` 91; `boundaries` 971; `group_member_lines`/`group_leaves`/`group_resets` 40/4/7 and `group_size()` 0 at end of file; durations min/median/max/sum 1/36/738/146813; the largest fight by own damage 212467/482/441/21416; top damage sources `you` 23369545, `Yder` 1447129, `Serenitee` 1321322, `Misery` 1000700; top healers `you` 1875603, `Serenitee` 196052, `Misery` 116859. And in `crates/wispd/src/timers.rs`'s test of the same name: `table.len()` 12245 and the sixteen `TrackerStats` fields 8042, 730, 399, 5972, 822, 214, 4936, 2097, 12814, 1660, 19, 2042, 2107, 144, 1060, 600, with `Mesmerization` VI samples `[22, 27, 21, 27, 19, 28, 24, 22, 28]`, `measured` 24, and `measured` 69/38/57/50 for `Pacify` V, `Venom of the Snake`, `Envenomed Bolt` X, `Odium` X.
+Both tests assert rather than print, so the numbers live in the test bodies and Task 3 must keep them true. Two details of this block are pre-Task-3 facts that legitimately move: `83 filtered out` becomes **90** once Task 3 lands — eight new unit tests, minus the one deleted with `spells_dir_from_log` — and the single `Running unittests src/main.rs` block gains a second one for `tests/logs_dir.rs` (Task 3, Step 4). The numbers are, in `crates/wispd/src/encounter.rs`'s `fixture_replay_matches_the_reference_exactly`: `encounters` 2524; `dmg_out` melee/spell/dot/shield 15198942/9082968/4622907/447208; `own_self_dmg` 18085260 and `own_pet_dmg` 5284285; `taken` melee/spell/dot/shield 1924867/709376/273054/257300; `heal_actual` 2364526 and `heal_over` 838539; `own_heal_actual`/`own_heal_over`/`own_hot_actual` 1875603/590911/355478; `heal_outside_fight` 259121; `pet_announcements` 4890 with `pet_count()` 91; `boundaries` 971; `group_member_lines`/`group_leaves`/`group_resets` 40/4/7 and `group_size()` 0 at end of file; durations min/median/max/sum 1/36/738/146813; the largest fight by own damage 212467/482/441/21416; top damage sources `you` 23369545, `Yder` 1447129, `Serenitee` 1321322, `Misery` 1000700; top healers `you` 1875603, `Serenitee` 196052, `Misery` 116859. And in `crates/wispd/src/timers.rs`'s test of the same name: `table.len()` 12245 and the sixteen `TrackerStats` fields 8042, 730, 399, 5972, 822, 214, 4936, 2097, 12814, 1660, 19, 2042, 2107, 144, 1060, 600, with `Mesmerization` VI samples `[22, 27, 21, 27, 19, 28, 24, 22, 28]`, `measured` 24, and `measured` 69/38/57/50 for `Pacify` V, `Venom of the Snake`, `Envenomed Bolt` X, `Odium` X.
 
 **The two log files, measured 2026-09-09** with `find … -type f -name 'eqlog_*.txt' -printf '%s\t%TY-%Tm-%Td\t%p\n'`:
 
