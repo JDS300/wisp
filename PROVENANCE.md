@@ -655,3 +655,35 @@ not move.
 
 No new source was consulted: this is a rule derived from the fixture's own
 group-chat and membership lines, the same fixture Spec 3 was designed from.
+
+### 2026-09-09 — Spec 3 encounters: verified live over EverQuest Legends by JDS300 (Milestone 4)
+
+JDS300 played EverQuest Legends on the desktop test rig (gamescope, as in
+Spec 1 and Spec 2), running `wispd` and `wisp-hud` from `main` after PR #3
+merged with the group-rows fix (merge commit `ee01845`).
+
+In his words: "Looks like it's tracking DPS and the 'you' line has been
+removed for both damage and healing." Asked about the rest of the Milestone 4
+list: "I think those are all good for now and we can troubleshoot
+additionally later if need be."
+
+What was observed: the personal line tracked his DPS during a live fight, and
+neither the damage rows nor the healing rows carried a row for him — the two
+defects his first live test found (out-of-group players ranked; himself
+listed twice) are gone.
+
+**What this proves:** Spec 3 Milestone 4's first two clauses ("personal line
+moves, group rows rank" as far as the rows' composition goes) are closed on
+the desktop rig, and the full live path (log file → `wispd` → socket →
+`wisp-hud`) carries the encounter block end-to-end over the real game, not
+only the fixture replay.
+
+**Not verified — not specifically exercised, not failed;** JDS300 called the
+run good for now, to be revisited if something shows up:
+
+- A groupmate appearing as a ranked row after a membership line (join,
+  invite, leader, Main Assist, group chat), and staying absent otherwise.
+- The 10 s close and the 30 s hold before the panel clears.
+- Zoning clearing the panel at once.
+- Restarting `wisp-hud` mid-fight showing the same numbers.
+- The handheld (Steam Deck / Legion Go S) target, deferred by standing rule.
