@@ -712,3 +712,46 @@ run good for now, to be revisited if something shows up:
   used at build time; nothing of it is in an artifact.
 - Not consulted: `itsspin/spinips`, `JDS300/spinips`, `EQBuddy`, and any
   other parser's source. Spec 4 needed no behaviour from any of them.
+
+### 2026-09-10 — Spec 5 design: sources consulted
+
+Spec 5 (the HUD) was designed in a brainstorm with JDS300, with four visual
+decisions made on browser mockups and one live spike inside gamescope. The
+consultations, as the charter requires:
+
+- **Details! Damage Meter, EqTool, EQLogParser — product only.** Guides,
+  README prose and screenshots, read by research subagents told not to open
+  any source file. Learned: one window per metric with bars relative to the
+  top row (Details!), timers grouped under the target as draining bars
+  (EqTool), and that a numeric strip with no bars is still legible in-game
+  (EQLogParser). Spec 5 adopts the first two conventions. No source read.
+- **EQBuddy — README and the screenshots under `docs/screenshots/`, no
+  source.** Learned that it offers per-metric breakout windows switchable
+  between fight and session, which Spec 5's blocks also do; noted as
+  convergent, not drawn from. The standing decision not to read its source is
+  unchanged.
+- **The upstream desktop application (Tier C) — one preview image,
+  `docs/previews/loremaster_panel.png` in `JDS300/spinips`, at product level.**
+  Looked at to know what to *avoid* reproducing as much as for its timer
+  treatment (state words on rows). Nothing of its layout, CSS, themes,
+  palette or typography moves; its names do not appear in Spec 5, which
+  refers to it only as "the upstream desktop application".
+- **gamescope source (`ValveSoftware/gamescope`, shallow clone of
+  2026-09-10; BSD-2-Clause, permitted freely)** — `steamcompmgr.cpp` and
+  `wlserver.cpp`, read to learn how input focus is picked and handed off
+  (external overlays excluded from focus; the Steam overlay path via
+  `STEAM_OVERLAY` + `STEAM_INPUT_FOCUS`; focus caches nulled on surface
+  destroy). Informs Spec 5 §3.1 and Appendix A. Nothing copied.
+- **MangoHud `src/keybinds.h` (MIT, permitted freely)** — read to confirm
+  that its in-game hotkeys poll `XQueryKeymap` on a separate display
+  connection. Wisp uses the same mechanism; no code moves.
+
+**The spike**, 2026-09-10, on JDS300's desktop over EverQuest Legends under
+gamescope launched by Lutris: keyboard polling without focus proven; an
+overlay taking pointer input proven; handing input back to the game **not**
+proven — the game lost mouse and keyboard until relaunched, and two repair
+attempts failed. Full procedure and results in Spec 5 Appendix A. The probe
+was a throwaway binary in the session scratchpad and was not committed.
+
+Primary sources: the client's `spells_us.txt` (resist type at field 29, the
+effect list at field 172; facts in Spec 5 Appendix B) and the running game.
