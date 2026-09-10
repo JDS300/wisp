@@ -10,4 +10,5 @@
 pub mod config;
 pub mod discover;
 pub mod paths;
+pub mod source;
 pub mod spells;

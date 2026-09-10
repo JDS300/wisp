@@ -6,25 +6,9 @@
 
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 use wisp_proto::{encode, Snapshot};
-
-/// `$XDG_RUNTIME_DIR/wisp/wispd.sock`, falling back to `/run/user/<uid>`.
-pub fn socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // SAFETY: getuid() takes no arguments and cannot fail.
-            let uid = unsafe { getuid() };
-            PathBuf::from(format!("/run/user/{}", uid))
-        });
-    base.join("wisp").join("wispd.sock")
-}
-
-extern "C" {
-    fn getuid() -> u32;
-}
 
 pub struct Server {
     listener: UnixListener,

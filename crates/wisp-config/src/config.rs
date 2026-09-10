@@ -119,8 +119,17 @@ impl Config {
     }
 
     /// The value as a path, its spaces and vendor names intact.
+    ///
+    /// A key present but empty is no path at all. `logs_dir =` with nothing
+    /// after it is an unfinished edit, and a reader that acted on it would go
+    /// looking for a directory named "" — so it falls through to whatever the
+    /// precedence rules try next, exactly as an absent key does.
     pub fn path_value(&self, key: Key) -> Option<PathBuf> {
-        self.values.get(&key).map(PathBuf::from)
+        self.values
+            .get(&key)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
     }
 
     /// Names in the file that are not keys Wisp has, in order of first
@@ -299,6 +308,22 @@ mod tests {
             Some(PathBuf::from("/games/Daybreak Game Company/Installed Games"))
         );
         assert_eq!(c.path_value(Key::Log), None, "an unset key has no path");
+    }
+
+    #[test]
+    fn an_empty_path_value_is_no_path_at_all() {
+        let c = Config::parse("logs_dir =\nlog =    \nspells_dir = /games/EverQuest Legends\n");
+        // `get` still reports the key as present, because that is the file's
+        // own text; only the path accessor refuses it, so a precedence chain
+        // moves on to the next source instead of resolving a directory named "".
+        assert_eq!(c.get(Key::LogsDir), Some(""));
+        assert_eq!(c.path_value(Key::LogsDir), None);
+        assert_eq!(c.path_value(Key::Log), None, "whitespace alone trims to empty");
+        assert_eq!(
+            c.path_value(Key::SpellsDir),
+            Some(PathBuf::from("/games/EverQuest Legends")),
+            "a real value beside the empty ones is untouched"
+        );
     }
 
     #[test]
