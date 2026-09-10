@@ -183,8 +183,11 @@ A DoT also carries its **damage type** from field 29, the resist type:
 (`Tashani` is 0.) Curses in this client are corruption-resisted, so
 "corruption" is the wire word and "curse" is not.
 
-The effect list is field 172: `$`-separated entries of
-`slot|spa|base|limit|max|calc`. `spells.rs` gains the two fields and a
+The effect list is the row's **last** field (index 172 in the 173-field rows
+of the 2026-08-24 client; eql-info's `SPELL_FORMAT.md` documents an insertion
+that moved it once already, so it is read by position from the end, never by a
+hard-coded index): `$`-separated entries of
+`slot|effect_id|base|limit|formula|max`. `spells.rs` gains the two fields and a
 `kind` on `SpellInfo`; the tick-line rule that upgrades a row to `dot` stays as
 a fallback for spells the table did not classify.
 
