@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wisp-proto", "crates/wispd", "crates/wisp-hud"]
+members = ["crates/wisp-config", "crates/wisp-proto", "crates/wispd", "crates/wisp-hud"]
 
 [workspace.package]
 version = "0.1.0"
