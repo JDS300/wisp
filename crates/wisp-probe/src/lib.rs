@@ -28,6 +28,25 @@ pub enum BackendKind {
     PlainWindow,
 }
 
+impl BackendKind {
+    /// The backend a name asks for, or `None` for a name that is not one.
+    ///
+    /// One mapping for every reader -- `wisp-hud`'s `--backend` and the config
+    /// file's `backend` key today, `wisp doctor` later -- so a backend cannot be
+    /// spelled one way in one place and another way in the next. The names are
+    /// the three the HUD has always accepted and nothing else; an unknown name
+    /// is the reader's to refuse, because only the reader knows whether it came
+    /// from a flag or from the config file.
+    pub fn parse(name: &str) -> Option<BackendKind> {
+        match name {
+            "gamescope" => Some(BackendKind::GamescopeX11),
+            "layer-shell" => Some(BackendKind::WlrLayerShell),
+            "plain" => Some(BackendKind::PlainWindow),
+            _ => None,
+        }
+    }
+}
+
 /// The prefix rule, in the only place it is written down.
 fn is_gamescope_atom(name: &str) -> bool {
     name.starts_with("GAMESCOPE_")
@@ -207,6 +226,32 @@ mod tests {
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn backend_parse_accepts_the_three_names() {
+        // The names a user writes, on the command line or in the config file.
+        assert_eq!(BackendKind::parse("gamescope"), Some(BackendKind::GamescopeX11));
+        assert_eq!(BackendKind::parse("layer-shell"), Some(BackendKind::WlrLayerShell));
+        assert_eq!(BackendKind::parse("plain"), Some(BackendKind::PlainWindow));
+    }
+
+    #[test]
+    fn backend_parse_rejects_everything_else() {
+        assert_eq!(BackendKind::parse(""), None);
+        assert_eq!(BackendKind::parse("Gamescope"), None, "the names are case-sensitive");
+        assert_eq!(BackendKind::parse("x11"), None, "a display server is not a backend name");
+        assert_eq!(BackendKind::parse("wayland"), None);
+    }
+
+    #[test]
+    fn backend_parse_does_not_prefix_match() {
+        // `is_gamescope_atom` matches a prefix because the root properties are a
+        // family; backend names are not a family, and a name that merely starts
+        // with one is a typo the reader has to refuse rather than guess at.
+        assert_eq!(BackendKind::parse("layer-shell-extra"), None);
+        assert_eq!(BackendKind::parse("plainx"), None);
+        assert_eq!(BackendKind::parse("gamescope "), None, "a trailing space is not the name");
     }
 
     #[test]
