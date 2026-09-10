@@ -1277,15 +1277,17 @@ EOF
 - Consumes: `packaging/release.sh`, `packaging/version.sh`, the pinned action SHAs in **Global Constraints**.
 - Produces: a workflow artifact on every push and PR; a GitHub Release on every `v*` tag.
 
-**`ci.yml`** — on `push` and `pull_request`. SPDX comment first. Jobs, in order: checkout (`actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`  # v7.0.1); toolchain (`dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0`  # master, pinned by SHA as its README instructs, with `with: {toolchain: stable, components: clippy}`); `run: rustup target add x86_64-unknown-linux-musl`; `run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync` (required by `release.sh` — see the appimagetool README quote in Global Constraints); `cargo build --workspace`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `packaging/release.sh`; upload `dist/` (`actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`  # v7.0.1). What the runner image already contains is not verified here, so run `desktop-file-validate` and `appstreamcli validate --no-net` on the two data files only when `command -v` finds them, and print a `SKIP <validator>` line when it does not — Task 6 validates both locally, where both tools are present. `packaging/release.sh` creates `dist/` itself and CI never runs `check-container.sh`, so no `mkdir -p dist` step belongs anywhere in this workflow — do not add one "to be safe".
+**`ci.yml`** — on `push` and `pull_request`. `permissions: contents: read` at the top level — this workflow only builds, tests and uploads a workflow artifact, and never touches a release. SPDX comment first. Jobs, in order: checkout (`actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`  # v7.0.1); toolchain (`dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0`  # master, pinned by SHA as its README instructs, with `with: {toolchain: stable, components: clippy}`); `run: rustup target add x86_64-unknown-linux-musl`; `run: command -v zsyncmake >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends zsync)` (required by `release.sh` — see the appimagetool README quote in Global Constraints); `cargo build --workspace`; `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `packaging/release.sh`; upload `dist/` (`actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`  # v7.0.1). The `zsync` install is guarded rather than unconditional: the `ubuntu-24.04` runner image already ships `zsync 0.6.2-5build1` (checked against the published runner-images package list), so an unconditional `apt-get update` would cost ten to twenty seconds per run and expose every build to mirror flakiness for a package that is already there; the guard keeps the safety net for an image that drops it. What the runner image already contains is not verified here otherwise, so run `desktop-file-validate` and `appstreamcli validate --no-net` on the two data files only when `command -v` finds them, and print a `SKIP <validator>` line when it does not — Task 6 validates both locally, where both tools are present. `packaging/release.sh` creates `dist/` itself and CI never runs `check-container.sh`, so no `mkdir -p dist` step belongs anywhere in this workflow — do not add one "to be safe".
 
-**No `cargo fmt --check` step.** `cargo fmt --all --check` reports diffs in 15 of the tree's 18 source files today; reformatting is not this spec's business, and a gate that fails on arrival teaches people to ignore gates. Put that reason in a YAML comment where the step would have been.
+**No `cargo fmt --check` step.** `cargo fmt --all --check` reports diffs in 30 of the tree's 34 source files, measured on 2026-09-10 against the tree as merged through Task 6 (`a63a29a`) — the earlier "15 of 18" figure was the pre-implementation count and is stale; do not repeat it. Reformatting is not this spec's business, and a gate that fails on arrival teaches people to ignore gates. Put that reason, with the 2026-09-10 date and the 30-of-34 figure, in a YAML comment where the step would have been.
 
 The Spec 3 replay guard does **not** run in CI: the frozen fixture lives outside the repository at `/mnt/Data4TB/…` and CI never has it. Say so in a comment too.
 
 One more comment to write, where the tooling step goes: `release.sh` downloads roughly 16 MB of pinned tooling (appimagetool plus the type-2 runtime) on **every** run, first-run caching notwithstanding, because a GitHub runner starts empty. That is accepted for now — no `actions/cache` step, no mirror, no vendoring. If the cost ever becomes annoying, the fix is a cache keyed on the two SHA-256s, and it is a separate decision from this spec's.
 
-**`release.yml`** — on `push` of a tag matching `v*`. `permissions: contents: write`. Same checkout and toolchain, same musl target and `zsync` install, then a step that compares the tag with the crate version — `v$(wisp_version)` must equal `${GITHUB_REF_NAME}`, else exit 1 with a message naming both — then `packaging/release.sh`, then `softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64`  # v3.0.3 with `files: dist/*`, which carries all four artifacts. All four, because the update-information string names the `.zsync` and AppImageUpdate fetches it from the release.
+**`release.yml`** — on `push` of a tag matching `v*`. `permissions: contents: write`. Same checkout and toolchain, same musl target and the same guarded `zsync` install as `ci.yml`, then a step that compares the tag with the crate version — `v$(wisp_version)` must equal `${GITHUB_REF_NAME}`, else exit 1 with a message naming both — then `cargo test --workspace`, then `packaging/release.sh`, then `softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64`  # v3.0.3 with `files: dist/*`, which carries all four artifacts. All four, because the update-information string names the `.zsync` and AppImageUpdate fetches it from the release.
+
+**`cargo test --workspace` runs immediately before `packaging/release.sh`, on this workflow's own tagged commit.** A tag pushed at a commit whose `ci.yml` run never went green would otherwise still produce a release: `release.sh` only proves the workspace compiles for the musl target, not that its tests pass. The thorough form — gating the release on `ci.yml`'s conclusion for the tagged commit, via the Checks API or `workflow_run` — was considered and deferred: it adds a second workflow's worth of polling logic for a case (tagging a red commit) that a maintainer pushing their own tags is unlikely to hit, and re-running the full test suite here costs one job, not a new mechanism.
 
 - [ ] **Step 1: Write both workflows**
 
@@ -1325,10 +1327,10 @@ CI: build, test, clippy and a release smoke run on every push; a GitHub Release 
 
 Both workflows run the same packaging/release.sh a human runs, so
 nothing in a release is made only in CI. Actions are pinned by commit
-SHA. There is no fmt gate: 15 of the tree's 18 source files would be
-reformatted today and that is not this spec's business. The replay guard
-does not run here either -- the frozen fixture lives outside the
-repository.
+SHA. There is no fmt gate: 30 of the tree's 34 source files would be
+reformatted today (measured 2026-09-10) and that is not this spec's
+business. The replay guard does not run here either -- the frozen
+fixture lives outside the repository.
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
@@ -1339,9 +1341,10 @@ EOF
 
 - [ ] `actionlint` is silent.
 - [ ] Every action is pinned by a 40-hex SHA with its tag in a trailing comment.
-- [ ] `release.yml` has `permissions: contents: write` and refuses a tag that does not match `v$(wisp_version)`.
-- [ ] Both workflows install the musl target and `zsync` before `release.sh`.
-- [ ] No `cargo fmt` step anywhere, and the reason is a comment in the file.
+- [ ] `ci.yml` has `permissions: contents: read`; `release.yml` has `permissions: contents: write` and refuses a tag that does not match `v$(wisp_version)`.
+- [ ] Both workflows install the musl target and guard the `zsync` install behind `command -v zsyncmake` before `release.sh`.
+- [ ] `release.yml` runs `cargo test --workspace` before `packaging/release.sh`, not only `cargo build`.
+- [ ] No `cargo fmt` step anywhere, and the reason (with the dated, current diff count) is a comment in the file.
 - [ ] SPDX comment at the top of both YAML files.
 - [ ] The first real run is recorded as **pending JDS300 pushing a tag** in your report; do not claim CI passed.
 
@@ -1494,6 +1497,10 @@ The live file grows while the game runs, so the byte count is a 2026-09-09 fact 
 **`file` and `ldd` output.** Not measured by this plan's author: producing it requires a musl build, which the writing brief excluded. Task 2 measures and pastes it for `wispd` and `wisp-hud`, Task 5 for all three. What the 2026-09-09 spike recorded, and what those steps must reproduce, is: each `file` line containing `static-pie linked`, `ldd` printing `statically linked`, and sizes of 918 KB for `wispd` and 2,163 KB for `wisp-hud` unstripped — measured before detection moved out of `wisp-hud`, so they are expected to move. Glibc release binaries link only `libgcc_s`, `libc` and the loader.
 
 **Task 6 measurements, from the release run at `cf9685f`.** Artifact sizes: `wisp-0.1.0-x86_64-linux.tar.gz` 1,757,825 bytes; `Wisp-0.1.0-x86_64.AppImage` 2,550,264 bytes; `Wisp-0.1.0-x86_64.AppImage.zsync` 7,698 bytes; `SHA256SUMS` 289 bytes. The two pinned tooling files download only on the first run, into `${XDG_CACHE_HOME:-$HOME/.cache}/wisp-packaging/`; a second run reuses them. appimagetool 1.9.1 also prints `WARNING: AppStream upstream metadata is missing, please consider creating it in usr/share/metainfo/io.github.jds300.Wisp.appdata.xml` on every run — it looks for the legacy `.appdata.xml` name and does not see the `.metainfo.xml` this plan installs in the same directory. Accepted: the AppImage still builds and embeds the file under its real name, and there is no second copy under the old name (Task 7's rule). Reviewer A measured `check-container.sh` at about eleven seconds end to end on the development box with the `ubuntu:24.04` image already cached; `apt-get install -y --no-install-recommends xvfb` is sufficient for `xvfb-run` — no further packages are pulled in for it.
+
+**Task 8 runner facts, verified by reviewer A against the `ubuntu-24.04` GitHub-hosted runner image.** Already present: `curl` 8.5.0, `binutils` 2.42 (so `strip` needs no install step), `rustup` 1.29.0, and `zsync` 0.6.2-5build1 — the last is why the `zsyncmake` install in both workflows is guarded rather than unconditional. No `musl-tools` package is needed: this is a pure-Rust workspace and the musl target links self-contained, with nothing to `cc`-link against libc. Neither `desktop-file-utils` nor `appstream` is on the image, so both `desktop-file-validate` and `appstreamcli validate --no-net` take the `SKIP` branch in `ci.yml`, every run, until the image changes.
+
+**The 30-of-34 fmt figure, measured 2026-09-10 against `a63a29a`.** `cargo fmt --all --check` prints one `Diff in <file>:<line>:` line per hunk — 302 hunks in this run — so the file count is not the hunk count but the number of distinct paths named across those 302 lines, which is 30, against 34 total from `git ls-files '*.rs'`.
 
 **Everything else in Global Constraints** — the tool inventory, the Flatpak runtime state, the sandbox observations, the `cargo fmt` count and the pinned URLs with their SHA-256s — was measured or fetched on 2026-09-09 by this plan's author, with the commands and source URLs quoted where they appear. The two SHA-256 values for appimagetool and the type-2 runtime were each confirmed twice: once from the GitHub API's `digest` field and once by downloading the file and running `sha256sum`.
 
