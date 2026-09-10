@@ -210,13 +210,9 @@ fn stub_encounter(seq: u64) -> Encounter {
         duration_s: d,
         you: Personal { damage: you, dps: 400, taken: 50 * d, taken_ps: 50, healing: 20 * d, hps: 20, overheal: 4 * d },
         damage: vec![
-            MeterRow { name: "you".to_string(), amount: you, per_s: 400, is_you: true },
             MeterRow { name: "Serenitee".to_string(), amount: ser, per_s: 290, is_you: false },
             MeterRow { name: "Misery".to_string(), amount: mis, per_s: 75, is_you: false },
         ],
-        healing: vec![
-            MeterRow { name: "Misery".to_string(), amount: 74 * d, per_s: 74, is_you: false },
-            MeterRow { name: "you".to_string(), amount: 20 * d, per_s: 20, is_you: true },
-        ],
+        healing: vec![MeterRow { name: "Misery".to_string(), amount: 74 * d, per_s: 74, is_you: false }],
     }
 }

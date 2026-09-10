@@ -209,8 +209,8 @@ Misery          3100   74/s  +
 Amounts print as integers below 10,000, as `12.3k` below 1,000,000, else as
 `1.32M`. Healing rows carry a trailing ` +` so they read
 differently from damage rows in the same list (a plain glyph the vendored
-monospace face is certain to have); your rows draw in a distinct
-colour; the personal line draws white while the fight is active and dimmed
+monospace face is certain to have); group rows draw white, since none
+of them is you; the personal line draws white while the fight is active and dimmed
 while it lingers. Columns are fixed width in the monospace face. The window
 is sized at attach for the kill line, the personal line, 8 timer rows, 5
 damage rows and 3 healing rows.

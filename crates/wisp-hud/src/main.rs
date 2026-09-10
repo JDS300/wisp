@@ -122,7 +122,6 @@ const WHITE: [u8; 3] = [255, 255, 255];
 const DIM: [u8; 3] = [170, 170, 170];
 const WARNING: [u8; 3] = [255, 200, 0];
 const CRITICAL: [u8; 3] = [255, 70, 70];
-const YOU_ROW: [u8; 3] = [140, 200, 255];
 
 fn roman(rank: u8) -> &'static str {
     ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
@@ -178,7 +177,7 @@ fn personal_line(e: &Encounter) -> String {
 
 fn meter_line(r: &MeterRow, heal: bool) -> text::Line {
     let text = format!("{} {:>7} {:>5}/s{}", fit(&r.name, NAME_COLS), compact(r.amount), r.per_s, if heal { "  +" } else { "" });
-    text::Line { text, rgb: if r.is_you { YOU_ROW } else { WHITE } }
+    text::Line { text, rgb: WHITE }
 }
 
 /// Kill count, personal line, timer rows, damage rows, healing rows.
@@ -271,10 +270,7 @@ mod tests {
             active,
             duration_s: 42,
             you: Personal { damage: 18_234, dps: 434, taken: 2_210, taken_ps: 52, healing: 900, hps: 21, overheal: 120 },
-            damage: vec![
-                MeterRow { name: "you".to_string(), amount: 18_234, per_s: 434, is_you: true },
-                MeterRow { name: "Serenitee".to_string(), amount: 1_320_500, per_s: 286, is_you: false },
-            ],
+            damage: vec![MeterRow { name: "Serenitee".to_string(), amount: 1_320_500, per_s: 286, is_you: false }],
             healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74, is_you: false }],
         }
     }
@@ -298,11 +294,10 @@ mod tests {
         assert_eq!(lines[0].text, "7 kills");
         assert_eq!(lines[1].text, "DPS   434  in   52/s  HPS   21   0:42");
         assert_eq!(lines[1].rgb, WHITE);
-        assert_eq!(lines[2].text, format!("{} {:>7} {:>5}/s", fit("you", NAME_COLS), "18.2k", 434));
-        assert_eq!(lines[2].rgb, YOU_ROW);
-        assert_eq!(lines[3].text, format!("{} {:>7} {:>5}/s", fit("Serenitee", NAME_COLS), "1.32M", 286));
-        assert_eq!(lines[4].text, format!("{} {:>7} {:>5}/s  +", fit("Misery", NAME_COLS), "3100", 74));
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[2].text, format!("{} {:>7} {:>5}/s", fit("Serenitee", NAME_COLS), "1.32M", 286));
+        assert_eq!(lines[2].rgb, WHITE);
+        assert_eq!(lines[3].text, format!("{} {:>7} {:>5}/s  +", fit("Misery", NAME_COLS), "3100", 74));
+        assert_eq!(lines.len(), 4);
     }
 
     #[test]
@@ -326,7 +321,7 @@ mod tests {
         let lines = hud_lines(&s);
         assert!(lines[1].text.starts_with("DPS"));
         assert!(lines[2].text.contains("Mesmerization"));
-        assert!(lines[3].text.starts_with(&fit("you", NAME_COLS)));
+        assert!(lines[3].text.starts_with(&fit("Serenitee", NAME_COLS)));
     }
 
     #[test]
