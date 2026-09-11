@@ -136,6 +136,12 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 
 [[ -z "$(git status --porcelain)" ]] || refuse "the working tree is not clean"
 
+# Checked before the network fetch below: a typo'd version should get its
+# own refusal even offline, not "main is not at origin/main" from a fetch
+# that never needed to run.
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+    || refuse "$version is not a Cargo semver version"
+
 # No --tags here: fetching every remote tag first would re-import a tag
 # straight back into refs/tags/ whenever it already sits on origin, so the
 # "already exists locally" check below would always fire first and the
@@ -147,9 +153,6 @@ git fetch --quiet origin main
 local_head="$(git rev-parse HEAD)"
 origin_head="$(git rev-parse origin/main)"
 [[ "$local_head" == "$origin_head" ]] || refuse "main is not at origin/main; pull or push first"
-
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
-    || refuse "$version is not a Cargo semver version"
 
 current="$(wisp_version)"
 [[ -n "$current" ]] || refuse "could not read the workspace version"

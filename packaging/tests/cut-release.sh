@@ -153,6 +153,21 @@ expect_refusal "a bare beta does not follow beta.1" "not greater" "$repo" "0.3.0
 make_repo "$repo" "0.3.0-beta.10"
 expect_refusal "beta.2 does not follow beta.10" "not greater" "$repo" "0.3.0-beta.2"
 
+# The accepting direction across the same boundary: a live release follows
+# the beta that led up to it.
+make_repo "$repo" "0.3.0-beta.1"
+set +e
+run_cut "$repo" "0.3.0" --dry-run
+code=$?
+set -e
+if [[ "$code" -ne 0 ]]; then
+    bad "a release follows its own beta" "exit $code; stderr: $(cat "$repo.err")"
+else
+    grep -q "channel live (latest)" "$repo.err" \
+        && ok "a release follows its own beta" \
+        || bad "a release follows its own beta" "$(cat "$repo.err")"
+fi
+
 # --- the dry run -----------------------------------------------------------
 
 make_repo "$repo" 0.2.0
