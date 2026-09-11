@@ -421,9 +421,18 @@ mod tests {
         let mut client = UnixStream::connect(socket.path()).unwrap();
         server.accept_pending(&snapshot(1, 0));
 
-        client.write_all(&[b'x'; 400]).unwrap();
+        // 600 bytes with no newline: the 256-byte read buffer means this
+        // takes three reads to drain, and the second of those pushes
+        // `pending` past `REQUEST_BUFFER`, which is the overflow branch this
+        // test exists to reach. A single 400-byte write, as this test used
+        // to send, never crosses that line in one read and left the
+        // recovery branch below untested.
+        client.write_all(&[b'x'; 600]).unwrap();
         client.flush().unwrap();
-        assert_eq!(server.poll_requests(), None);
+        for _ in 0..3 {
+            assert_eq!(server.poll_requests(), None);
+        }
+        assert_eq!(server.client_count(), 1, "an overflowing client stays connected");
         // The newline ends the abandoned line; the word after it is read normally.
         client.write_all(b"\nstop\n").unwrap();
         client.flush().unwrap();
