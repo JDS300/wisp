@@ -50,6 +50,13 @@ trees had:
 - **`winnow`** 0.7.15 and 1.0.4 — MIT. The parser-combinator crate `toml`
   and `toml_parser` each depend on; two versions coexist in the dependency
   graph, both MIT.
+- **`indexmap`** 2.14.2 — Apache-2.0 OR MIT. Listed in `Cargo.lock` as a
+  dependency of `toml` (an optional, feature-gated ordered-map type `toml`
+  offers for preserving key order). Not reachable from any workspace binary:
+  `cargo tree --target all -e normal,build,dev -i indexmap` prints nothing,
+  because `wisp-config` does not enable the feature that activates it.
+  Recorded anyway because it is a new entry in the lock, compiled by
+  nothing in this workspace's build.
 
 `cargo tree -p wisp-config -e normal` is the source for this list; `cargo
 metadata`'s `license` field for each package is the source for the licences.
