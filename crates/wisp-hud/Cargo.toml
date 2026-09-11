@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 fontdue = "0.9.4"
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
 wayland-client = "0.31.15"
 wisp-config = { path = "../wisp-config" }
