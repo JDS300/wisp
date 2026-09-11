@@ -99,14 +99,25 @@ impl Server {
                         // Could not prepare the stream; treat like a failed handshake.
                         continue;
                     }
-                    if stream.write_all(encode(current).as_bytes()).is_ok() {
-                        let _ = stream.flush();
-                        self.clients.push(Client {
-                            stream,
-                            pending: Vec::new(),
-                            overflowed: false,
-                        });
-                    }
+                    // The snapshot write can fail even for a client that has
+                    // something to say: `wisp stop` and the tray's Stop entry
+                    // both connect, write `stop\n`, flush and drop at once,
+                    // well before this write reaches the socket, so the peer
+                    // can already be fully closed by the time it runs. A
+                    // failed write does not mean the peer sent nothing --
+                    // bytes it wrote before closing are still sitting in this
+                    // socket's receive queue -- so the client is kept
+                    // regardless, and `poll_requests` reads it exactly like
+                    // any other client. One with nothing to say is reaped the
+                    // normal way, by that same read finding end-of-stream or
+                    // by a later `broadcast`'s write failing.
+                    let _ = stream.write_all(encode(current).as_bytes());
+                    let _ = stream.flush();
+                    self.clients.push(Client {
+                        stream,
+                        pending: Vec::new(),
+                        overflowed: false,
+                    });
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
@@ -442,6 +453,43 @@ mod tests {
         assert!(!socket.path().exists(), "a stop leaves nothing behind at {}", socket.path().display());
         // And nothing answers there any more.
         assert!(UnixStream::connect(socket.path()).is_err());
+    }
+
+    #[test]
+    fn a_client_that_writes_stop_and_closes_before_the_snapshot_write_is_still_honoured() {
+        let socket = TempSocket::new("stop-then-close");
+        let mut server = Server::bind(socket.path()).unwrap();
+        {
+            let mut client = UnixStream::connect(socket.path()).unwrap();
+            client.write_all(b"stop\n").unwrap();
+            client.flush().unwrap();
+            // Dropped here: the peer closes immediately, exactly as `wisp
+            // stop` and the tray's Stop entry do -- write, flush, drop --
+            // well before `accept_pending`'s own snapshot write reaches
+            // this socket. That write can fail (the peer already closed
+            // its read side too), but the "stop\n" bytes it sent are
+            // still sitting in this socket's receive queue regardless.
+        }
+        server.accept_pending(&snapshot(1, 0));
+        assert_eq!(server.poll_requests(), Some(Request::Stop));
+    }
+
+    #[test]
+    fn a_client_that_writes_garbage_and_closes_is_reaped_and_the_server_keeps_running() {
+        let socket = TempSocket::new("garbage-then-close");
+        let mut server = Server::bind(socket.path()).unwrap();
+        {
+            let mut client = UnixStream::connect(socket.path()).unwrap();
+            client.write_all(b"nonsense\n").unwrap();
+            client.flush().unwrap();
+        }
+        server.accept_pending(&snapshot(1, 0));
+        assert_eq!(server.poll_requests(), None, "garbage is never a request");
+        // Reaped either by the read finding end-of-stream or by a later
+        // broadcast's write failing -- either way the server itself is
+        // unharmed and keeps running.
+        server.broadcast(&snapshot(2, 0));
+        assert_eq!(server.client_count(), 0);
     }
 
     #[test]
