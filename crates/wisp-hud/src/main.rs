@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // crates/wisp-hud/src/main.rs
 mod backend;
+#[allow(dead_code)] // Task 7 rewires the HUD onto this module; text.rs still draws it today.
+mod draw;
 mod text;
 
 use backend::OverlayBackend;

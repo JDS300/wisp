@@ -11,12 +11,15 @@ Recorded per the [clean-room charter](docs/specs/2026-09-08-clean-room-charter.m
 
 ## Vendored
 
-- **DejaVu Sans Mono** (`assets/DejaVuSansMono.ttf`) — DejaVu Fonts License, a
-  permissive Bitstream Vera derivative. Used to rasterise HUD text. Chosen
-  because it is monospaced, so a changing number does not reflow the overlay.
-  Full licence text: [`assets/DejaVuSansMono.LICENSE`](assets/DejaVuSansMono.LICENSE)
+- **DejaVu Sans Mono, DejaVu Sans, DejaVu Sans Bold**
+  (`assets/DejaVuSansMono.ttf`, `assets/DejaVuSans.ttf`,
+  `assets/DejaVuSans-Bold.ttf`) — DejaVu Fonts License, a permissive
+  Bitstream Vera derivative. Mono rasterises the existing HUD text; Sans and
+  Sans Bold are the canvas layer's proportional faces. Chosen because all
+  three ship in the same `ttf-dejavu` package with the same licence text.
+  Full licence text: [`assets/DejaVu.LICENSE`](assets/DejaVu.LICENSE)
   (copied verbatim from `/usr/share/licenses/ttf-dejavu/LICENSE`, which
-  matches the text embedded in the font's own name table).
+  matches the text embedded in each font's own name table).
 
 - **eql-info** (`github.com/amerzel/eql-info`, James Whiteneck) — MIT for its
   source; game data excluded. Studied, not vendored: its `SPELL_FORMAT.md`
