@@ -163,3 +163,49 @@ impl Theme {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec §6's "Sizes" acceptance criterion, and the §4.2 table it comes
+    /// from. The one criterion in §6 with no assertion anywhere: `model.rs`
+    /// covers scale 1.5 only through a block *width* of 435, which is not
+    /// what the criterion says, and a row height that quietly stopped
+    /// scaling would pass every other test in the suite.
+    #[test]
+    fn the_spec_table_is_transcribed_at_scale_one() {
+        let t = Theme::at(1.0);
+        assert_eq!(t.scale, 1.0);
+        assert_eq!(t.row_h, 24, "§4.2: a row is 24 px tall");
+        assert_eq!(t.row_gap, 4, "§4.2: 4 px gap above");
+        assert_eq!(t.row_inset, 4, "§4.2: 4 px inset from the panel edge");
+        assert_eq!(t.pad_x, 8, "§4.2: 8 px horizontal text padding");
+        assert_eq!(t.header_pad_y, 4, "§4.2: 4 px vertical header padding");
+        assert_eq!(t.group_gap, 7, "§4.2: a target label sits 7 px above its first row");
+        assert_eq!(t.radius, 3, "§4.2: 3 px panel corner radius");
+        assert_eq!(t.bar_radius, 2, "§4.2: 2 px bar radius");
+        assert_eq!(t.border, 1, "§4.2: 1 px panel border");
+        assert_eq!(t.text_px, 13.0, "§4.2: 13 px row text");
+        assert_eq!(t.number_px, 12.5, "§4.2: 12.5 px numbers");
+        assert_eq!(t.header_px, 12.0, "§4.2: 12 px header text");
+        assert_eq!(t.target_px, 11.5, "§4.2: 11.5 px target label");
+        assert_eq!(t.kind_px, 10.5, "§4.2: 10.5 px kind label");
+    }
+
+    #[test]
+    fn scale_multiplies_every_size() {
+        // §6: "at `scale = 1.5` they are 36 and 6".
+        let t = Theme::at(1.5);
+        assert_eq!(t.row_h, 36);
+        assert_eq!(t.row_gap, 6);
+        // And the rest of the table with them, since `scale` multiplies
+        // "every one of them" (§4.2) and nothing else may opt out.
+        assert_eq!(t.pad_x, 12);
+        assert_eq!(t.radius, 5, "3 * 1.5 rounds to 5");
+        assert_eq!(t.border, 2, "1 * 1.5 rounds to 2");
+        assert_eq!(t.text_px, 19.5);
+        assert_eq!(t.nudge, 6);
+        assert_eq!(t.shift_nudge, 36);
+    }
+}
