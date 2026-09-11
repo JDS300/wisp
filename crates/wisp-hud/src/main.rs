@@ -2,9 +2,6 @@
 // crates/wisp-hud/src/main.rs
 mod backend;
 mod draw;
-// Written by Task 6a, wired up by Task 6b: until the layer-shell backend
-// calls it, nothing in this binary does. Remove this attribute there.
-#[allow(dead_code)]
 mod evdev;
 mod hud_mode;
 mod keys;
@@ -151,6 +148,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // later poll that fails differently -- or succeeds, then fails again --
     // still gets its own line.
     let mut last_keyboard_error: Option<String> = None;
+    // The keys currently down, as the layer-shell backend reports them.
+    // The polled path builds its own set every tick from `XQueryKeymap`;
+    // this one is maintained by events, because that is all there is once
+    // the compositor has moved focus to the HUD and polling has gone blind.
+    let mut held: std::collections::HashSet<Key> = std::collections::HashSet::new();
+    let mut keyboard_taken = false;
 
     loop {
         let mut redraw = false;
@@ -220,7 +223,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let mut shift_held = false;
-        if let Some(kb) = &mut keyboard {
+        if keyboard_taken {
+            // The compositor has the poller's own connection blind (Spec 6
+            // §4.5): every key, including the one that leaves the mode,
+            // arrives as a `wl_keyboard` event instead.
+            for event in surface.drain_keys() {
+                if event.pressed {
+                    held.insert(event.key);
+                } else {
+                    held.remove(&event.key);
+                }
+            }
+            shift_held = held.contains(&Key::Shift);
+            pending_keys.extend(edges.update(now, &held));
+        } else if let Some(kb) = &mut keyboard {
             match kb.poll() {
                 Ok(down) => {
                     // A poll that starts working again is worth reporting on
@@ -248,7 +264,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("{line}");
                 continue;
             }
-            match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
+            let was_active = hud_mode.active;
+            let action = hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE);
+            if !was_active && hud_mode.active {
+                // Entering: ask for the keyboard. `false` on every X11
+                // backend and on a compositor that would not give it, and
+                // the poller keeps driving the keys exactly as in v0.2.0.
+                keyboard_taken = surface.take_keyboard(true);
+                held.clear();
+            } else if was_active && !hud_mode.active && keyboard_taken {
+                // Leaving: give it back, and drop whatever the compositor
+                // told us on the way out.
+                surface.take_keyboard(false);
+                let _ = surface.drain_keys();
+                keyboard_taken = false;
+                held.clear();
+            }
+            match action {
                 Action::Nothing => {}
                 Action::Redraw => redraw = true,
                 Action::SaveAndExit => {

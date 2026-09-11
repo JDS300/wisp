@@ -42,7 +42,6 @@ impl std::error::Error for BackendError {}
 
 /// One key transition from a backend that *receives* key events rather than
 /// polling for them. `pressed` is false for a release.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyEvent {
     pub key: crate::keys::Key,

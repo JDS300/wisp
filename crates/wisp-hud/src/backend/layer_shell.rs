@@ -3,14 +3,17 @@
 //! A zwlr_layer_shell_v1 surface on the overlay layer, for desktop Wayland
 //! sessions not running under gamescope: KDE, Sway, Hyprland, river.
 
-use crate::backend::{BackendError, Frame, OverlayBackend, Rect};
+use crate::backend::{BackendError, Frame, KeyEvent, OverlayBackend, Rect};
+use crate::evdev::ChordTracker;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_dispatch2, delegate_registry,
+    dispatch2::Dispatch2,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::{Capability, SeatHandler, SeatState},
     shell::{
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -20,10 +23,11 @@ use smithay_client_toolkit::{
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
+use std::collections::VecDeque;
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_shm, wl_surface},
-    Connection, EventQueue, QueueHandle,
+    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    Connection, EventQueue, QueueHandle, WEnum,
 };
 
 /// Dispatch target for the live connection. Holds only what event handling
@@ -32,11 +36,75 @@ use wayland_client::{
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
+    seat_state: SeatState,
     shm: Shm,
     /// Set by every `configure`, to the size it carried. `attach` waits for
     /// one where both dimensions are non-zero.
     new_size: Option<(u32, u32)>,
     closed: bool,
+    /// The seat's keyboard, once `new_capability` has seen one. `None` until
+    /// then, and again once `remove_capability` takes it away.
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// Key events collected from `wl_keyboard`, in order, waiting for
+    /// `drain_keys` to hand them to the caller.
+    keys: VecDeque<KeyEvent>,
+    /// The evdev-to-`Key` state machine: modifiers, the chord, and what is
+    /// currently reported as held.
+    chord: ChordTracker,
+    /// Whether `wl_keyboard.enter` has arrived since the last `leave` (or
+    /// since the keyboard was bound). `take_keyboard`'s handshake reads this.
+    entered: bool,
+}
+
+/// User data for the HUD's `wl_keyboard`. A type of its own rather than
+/// `()`, because `delegate_dispatch2!(AppState)` is a blanket
+/// `Dispatch<I, U> for AppState where U: Dispatch2<I, AppState>`, and a
+/// hand-written `Dispatch<WlKeyboard, ()>` would conflict with it.
+struct KeyboardData;
+
+impl Dispatch2<wl_keyboard::WlKeyboard, AppState> for KeyboardData {
+    fn event(
+        &self,
+        state: &mut AppState,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _conn: &Connection,
+        _qh: &QueueHandle<AppState>,
+    ) {
+        match event {
+            wl_keyboard::Event::Enter { keys, .. } => {
+                state.entered = true;
+                let codes = crate::evdev::codes_from_enter(&keys);
+                state.keys.extend(state.chord.sync_from_enter(&codes));
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                state.entered = false;
+                // No more releases are coming, so everything held is
+                // released here or the caller's set never empties.
+                let released = state.chord.release_all();
+                state.keys.extend(released);
+            }
+            wl_keyboard::Event::Key { key, state: key_state, .. } => {
+                // `Repeated` (wl_seat v10) is a press; SCTK binds at most
+                // version 7 here, so it should never arrive, and treating it
+                // as a press is the harmless answer if it ever does — the
+                // key is already in the caller's held set and `Edges` owns
+                // the repeat cadence.
+                let pressed = matches!(
+                    key_state,
+                    WEnum::Value(wl_keyboard::KeyState::Pressed)
+                        | WEnum::Value(wl_keyboard::KeyState::Repeated)
+                );
+                if let Some(event) = state.chord.feed(key, pressed) {
+                    state.keys.push_back(event);
+                }
+            }
+            // Keymap, Modifiers and RepeatInfo are all deliberately ignored:
+            // the mapping is by position (§4.5) and the repeat cadence is
+            // `keys::Edges`', so nothing here needs xkb.
+            _ => {}
+        }
+    }
 }
 
 impl CompositorHandler for AppState {
@@ -138,11 +206,53 @@ impl ShmHandler for AppState {
     }
 }
 
+impl SeatHandler for AppState {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        // `SeatState::get_keyboard` is behind sctk's `xkbcommon` feature,
+        // which binds the C library; `wl_seat.get_keyboard` from
+        // wayland-client is the same request without it.
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            self.keyboard = Some(seat.get_keyboard(qh, KeyboardData));
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+            self.entered = false;
+            let released = self.chord.release_all();
+            self.keys.extend(released);
+        }
+    }
+
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+}
+
 impl ProvidesRegistryState for AppState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 delegate_dispatch2!(AppState);
@@ -160,6 +270,9 @@ pub struct LayerShellBackend {
     state: Option<AppState>,
     pool: Option<SlotPool>,
     layer: Option<LayerSurface>,
+    /// Once a compositor has failed to give the HUD the keyboard, it is not
+    /// asked again for the rest of the run.
+    latch: KeyboardLatch,
 }
 
 impl LayerShellBackend {
@@ -173,6 +286,7 @@ impl LayerShellBackend {
             state: None,
             pool: None,
             layer: None,
+            latch: KeyboardLatch::default(),
         }
     }
 }
@@ -196,9 +310,14 @@ impl OverlayBackend for LayerShellBackend {
         let mut state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
+            seat_state: SeatState::new(&globals, &qh),
             shm,
             new_size: None,
             closed: false,
+            keyboard: None,
+            keys: VecDeque::new(),
+            chord: ChordTracker::new(),
+            entered: false,
         };
 
         // One roundtrip so every output already known from
@@ -368,5 +487,126 @@ impl OverlayBackend for LayerShellBackend {
             ));
         }
         Ok(())
+    }
+
+    fn take_keyboard(&mut self, exclusive: bool) -> bool {
+        let (Some(layer), Some(queue), Some(state)) =
+            (self.layer.as_ref(), self.event_queue.as_mut(), self.state.as_mut())
+        else {
+            return false;
+        };
+
+        if !exclusive {
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.commit();
+            let _ = queue.roundtrip(state);
+            // The compositor moves focus back to whatever had it; from here on
+            // no release events arrive, so everything held is released now.
+            let released = state.chord.release_all();
+            state.keys.extend(released);
+            state.entered = false;
+            return false;
+        }
+
+        if !self.latch.may_ask() {
+            return false;
+        }
+
+        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        layer.commit();
+
+        // Bounded: §4.5's 500 ms. A compositor that ignores the switch must not
+        // hang the frame the chord was pressed on.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            let _ = queue.roundtrip(state);
+            match handshake(state.entered, std::time::Instant::now() >= deadline) {
+                Handshake::Granted => return true,
+                Handshake::Denied => break,
+                // A roundtrip returns as soon as the compositor answers the sync,
+                // which is at once; without this the loop would spin for 500 ms.
+                Handshake::KeepWaiting => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit();
+        let _ = queue.roundtrip(state);
+        eprintln!(
+            "wisp-hud: the compositor did not give the HUD the keyboard; HUD-mode keys will also reach the game"
+        );
+        self.latch.deny();
+        false
+    }
+
+    fn drain_keys(&mut self) -> Vec<KeyEvent> {
+        let (Some(queue), Some(state)) = (self.event_queue.as_mut(), self.state.as_mut()) else {
+            return Vec::new();
+        };
+        // The render loop only redraws when something changed, so `present`'s
+        // own roundtrip cannot be relied on to read the socket: this is the read
+        // that delivers key events. It is called only inside HUD mode (main.rs),
+        // so outside it the connection is as quiet as it was in v0.2.0.
+        let _ = queue.roundtrip(state);
+        state.keys.drain(..).collect()
+    }
+}
+
+/// The exclusive-keyboard handshake as a decision, so the 500 ms rule is a
+/// unit test and not a compositor.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Handshake {
+    Granted,
+    KeepWaiting,
+    Denied,
+}
+
+pub(crate) fn handshake(entered: bool, deadline_passed: bool) -> Handshake {
+    if entered {
+        Handshake::Granted
+    } else if deadline_passed {
+        Handshake::Denied
+    } else {
+        Handshake::KeepWaiting
+    }
+}
+
+/// One latch: once a compositor has failed to give the HUD the keyboard, it
+/// is not asked again for the rest of the run.
+#[derive(Debug, Default)]
+pub(crate) struct KeyboardLatch {
+    denied: bool,
+}
+
+impl KeyboardLatch {
+    pub(crate) fn may_ask(&self) -> bool {
+        !self.denied
+    }
+
+    pub(crate) fn deny(&mut self) {
+        self.denied = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_handshake_waits_then_gives_up() {
+        assert_eq!(handshake(true, false), Handshake::Granted);
+        assert_eq!(handshake(true, true), Handshake::Granted, "an enter that arrived at the last moment still counts");
+        assert_eq!(handshake(false, false), Handshake::KeepWaiting);
+        assert_eq!(handshake(false, true), Handshake::Denied);
+    }
+
+    #[test]
+    fn a_compositor_that_refused_once_is_not_asked_again() {
+        let mut latch = KeyboardLatch::default();
+        assert!(latch.may_ask());
+        latch.deny();
+        assert!(!latch.may_ask());
+        latch.deny();
+        assert!(!latch.may_ask(), "and it stays denied for the rest of the run");
     }
 }
