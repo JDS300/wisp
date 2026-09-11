@@ -192,6 +192,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     last_keyboard_error = None;
                     let shift_held = down.contains(&Key::Shift);
                     for key in edges.update(now, &down) {
+                        // The one key the loaded config can veto. `Edges`
+                        // fires `Chord` exactly once per physical press (T7),
+                        // so this is one line per press.
+                        if let Some(line) = hud_mode_refusal(&hud_mode, key, config.layout_error()) {
+                            eprintln!("{line}");
+                            continue;
+                        }
                         match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
                             Action::Nothing => {}
                             Action::Redraw => redraw = true,
@@ -386,6 +393,30 @@ fn print_layout_notices(config: &Config) {
     if let Some(e) = config.layout_error() {
         eprintln!("wisp-hud: config layout ignored: {e}");
     }
+}
+
+/// The line refusing `key`, or `None` to let [`HudMode::handle`] have it.
+///
+/// HUD mode is unavailable while the config file's layout did not parse. What
+/// the HUD is drawing then is `Layout::default_layout`, not the user's
+/// layout, so every edit HUD mode offers would be an edit to blocks the file
+/// never asked for -- and exiting HUD mode always saves, which would write
+/// those defaults over the file the user still has a chance to fix by hand.
+/// Refusing the chord is the whole of it: nothing else can enter HUD mode,
+/// and once inside it nothing is refused, because a user who is already in
+/// there has to be able to get out (`Escape` and `Chord` both end in
+/// `SaveAndExit`).
+///
+/// Not sticky. The error comes from whatever `Config` the last successful
+/// read produced, so a live reload that fixes the file makes HUD mode
+/// available again with no restart -- and one that breaks it takes HUD mode
+/// away again.
+fn hud_mode_refusal(hud_mode: &HudMode, key: Key, layout_error: Option<&str>) -> Option<String> {
+    if hud_mode.active || key != Key::Chord {
+        return None;
+    }
+    let error = layout_error?;
+    Some(format!("wisp-hud: HUD mode unavailable: config: {error}"))
 }
 
 /// Saves `layout` into the config file at `path`, for HUD mode's own
@@ -676,6 +707,42 @@ mod tests {
     #[test]
     fn a_good_chord_parses() {
         assert_eq!(chord_of("ctrl+shift+grave").unwrap(), keys::Chord { ctrl: true, shift: true, alt: false, key: "grave".to_string() });
+    }
+
+    #[test]
+    fn the_chord_is_refused_while_the_config_layout_did_not_parse() {
+        // What the HUD draws with a layout error is `Layout::default_layout`,
+        // not the user's layout, and leaving HUD mode always saves -- so
+        // entering it at all would put the user one Esc away from writing the
+        // default two blocks over a file they can still fix by hand.
+        let broken = Config::parse("[[block]]\nkind = \"meter\"\nanchor = \"bottm-left\"\n");
+        let error = broken.layout_error().expect("a mistyped anchor is a layout error");
+
+        let mut hud_mode = HudMode::default();
+        let line = hud_mode_refusal(&hud_mode, Key::Chord, Some(error)).expect("the chord is refused");
+        assert!(line.starts_with("wisp-hud: HUD mode unavailable: config: "), "{line}");
+        assert!(line.contains("[[block]] 0:"), "it names the block, as the CLI writers do: {line}");
+        assert!(!hud_mode.active, "the chord never reached HudMode::handle");
+
+        // Only the chord, and only from outside: a user already inside HUD
+        // mode must still be able to get out.
+        assert_eq!(hud_mode_refusal(&hud_mode, Key::Escape, Some(error)), None);
+        assert_eq!(hud_mode_refusal(&hud_mode, Key::H, Some(error)), None);
+        let inside = HudMode { active: true, selected: 0 };
+        assert_eq!(hud_mode_refusal(&inside, Key::Chord, Some(error)), None);
+
+        // A reload that fixes the file makes HUD mode available again, with
+        // no restart: the error is read from whatever `Config` main is
+        // holding, and nothing here remembers.
+        let fixed = Config::parse("[[block]]\nkind = \"meter\"\nanchor = \"bottom-left\"\n");
+        assert_eq!(fixed.layout_error(), None);
+        assert_eq!(hud_mode_refusal(&hud_mode, Key::Chord, fixed.layout_error()), None);
+        let mut layout = fixed.layout().clone();
+        assert_eq!(
+            hud_mode.handle(Key::Chord, false, &mut layout, NUDGE, SHIFT_NUDGE),
+            Action::Redraw
+        );
+        assert!(hud_mode.active, "the chord enters HUD mode once the layout parses");
     }
 
     #[test]
