@@ -48,6 +48,10 @@ jobs:
 
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The release-cutting script's refusals, against a scratch repository
+      # with a bare origin of its own. No network, no tag on this repository.
+      - run: packaging/tests/cut-release.sh
+
       # No `cargo fmt --all --check` step: as measured 2026-09-10, 30 of
       # the tree's 34 tracked .rs files are not rustfmt-clean, and
       # reformatting is not this spec's business. A gate that fails on
