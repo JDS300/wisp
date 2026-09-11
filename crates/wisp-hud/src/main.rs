@@ -2,6 +2,10 @@
 // crates/wisp-hud/src/main.rs
 mod backend;
 mod draw;
+// Written by Task 6a, wired up by Task 6b: until the layer-shell backend
+// calls it, nothing in this binary does. Remove this attribute there.
+#[allow(dead_code)]
+mod evdev;
 mod hud_mode;
 mod keys;
 mod model;

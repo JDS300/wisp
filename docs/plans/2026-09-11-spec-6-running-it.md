@@ -3540,6 +3540,8 @@ Append-only. Rules are in Global Constraints. One row per measured fact or rulin
 | 2026-09-11 | plan | `delegate_dispatch2!(AppState)` is a blanket `Dispatch` impl, so a hand-written `Dispatch<WlKeyboard, ()>` for `AppState` is E0119 | `smithay-client-toolkit-0.21.1/src/dispatch2.rs:25-46` |
 | 2026-09-11 | plan | `sort -V` is not a semver comparator (`0.3.0-beta.1` sorts above `0.3.0`); `cut-release.sh` carries its own, checked against 14 pairs | `printf '0.3.0\n0.3.0-beta.1\n' \| sort -V` |
 | 2026-09-11 | plan | ImageMagick 7 has no raw `argb:` output format: it writes 0 bytes and exits 0 | `magick t22.png -depth 8 argb:- \| wc -c` |
+| 2026-09-11 | 6a | The grave chord is press-and-release, not press-only: `feed(41, true)` with both modifiers held yields `Chord` pressed, and `feed(41, false)` yields `Chord` released whatever the modifiers are doing by then | `keys::Edges` implements HUD mode's repeat and the chord's never-repeat rule over a held set, and the layer-shell path reuses `Edges` unchanged (T6b); a press-only chord would stay in the held set for ever and never fire again |
+| 2026-09-11 | 6a | `wl_keyboard.enter`'s `keys` array contributes modifiers only to `ChordTracker::sync_from_enter`; every other code in it, grave included, is ignored | when HUD mode has just been entered by the chord, `enter`'s array lists grave, ctrl and shift as already down; feeding grave from it would synthesise a second chord and leave HUD mode on the frame it was entered |
 
 ### Rulings (Task 9 completes this list)
 

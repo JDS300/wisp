@@ -40,6 +40,15 @@ impl fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
+/// One key transition from a backend that *receives* key events rather than
+/// polling for them. `pressed` is false for a release.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub key: crate::keys::Key,
+    pub pressed: bool,
+}
+
 /// Every implementation must produce a surface that never takes focus and
 /// never receives pointer or keyboard input. See the charter invariant.
 pub trait OverlayBackend {
@@ -49,6 +58,28 @@ pub trait OverlayBackend {
     /// Uploads `dirty` sub-rectangles of `frame` (which is output-sized). An
     /// empty `dirty` uploads nothing and returns `Ok`.
     fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError>;
+
+    /// Ask for, or give back, the keyboard.
+    ///
+    /// `true` means this backend now receives key events and the caller must
+    /// read them with `drain_keys` instead of polling. The default is a
+    /// no-op returning `false`, which is the right answer on every X11
+    /// backend -- Spec 5 §3.1 stands there unchanged, and `XQueryKeymap` on
+    /// the HUD's own connection keeps working because the game still holds
+    /// the keyboard.
+    // Unused until Task 6b's layer-shell backend overrides these and
+    // main.rs calls them; T6b removes this attribute.
+    #[allow(dead_code)]
+    fn take_keyboard(&mut self, _exclusive: bool) -> bool {
+        false
+    }
+
+    /// Key events since the last call, in order. Empty on X11 backends, and
+    /// only worth calling when `take_keyboard(true)` returned `true`.
+    #[allow(dead_code)]
+    fn drain_keys(&mut self) -> Vec<KeyEvent> {
+        Vec::new()
+    }
 }
 
 /// An axis-aligned pixel rectangle, top-left origin. `x`/`y` are signed so a
