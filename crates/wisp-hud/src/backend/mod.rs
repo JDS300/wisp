@@ -66,16 +66,12 @@ pub trait OverlayBackend {
     /// backend -- Spec 5 §3.1 stands there unchanged, and `XQueryKeymap` on
     /// the HUD's own connection keeps working because the game still holds
     /// the keyboard.
-    // Unused until Task 6b's layer-shell backend overrides these and
-    // main.rs calls them; T6b removes this attribute.
-    #[allow(dead_code)]
     fn take_keyboard(&mut self, _exclusive: bool) -> bool {
         false
     }
 
     /// Key events since the last call, in order. Empty on X11 backends, and
     /// only worth calling when `take_keyboard(true)` returned `true`.
-    #[allow(dead_code)]
     fn drain_keys(&mut self) -> Vec<KeyEvent> {
         Vec::new()
     }
