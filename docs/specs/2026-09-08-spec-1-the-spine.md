@@ -39,6 +39,8 @@ Explicitly deferred, so their absence is a decision rather than an oversight:
 
 ## 3. Invariant: the HUD never takes input
 
+> **Amended by Spec 5 §3.1 (2026-09-10):** the rule stands as "the HUD never changes focus"; the reason given below was corrected by the spike recorded in Spec 5 Appendix A.
+
 **On any backend, ever. Not focusable, not clickable, not draggable, not
 resizable by pointer.** All configuration is out of band: CLI flags and a
 config file.

@@ -1,6 +1,6 @@
 # Spec 5 — the HUD
 
-**Status:** designed 2026-09-10 with JDS300 (brainstorm, four visual decisions made on mockups, one live spike); pending the implementation plan
+**Status:** implemented 2026-09-11; pending JDS300: Milestone 4 (HUD mode over the game) and Milestone 7 (live)
 **Depends on:** [Spec 4 — packaging](2026-09-09-spec-4-packaging.md), [Spec 3 — encounters](2026-09-08-spec-3-encounters.md), [Spec 2 — timers](2026-09-08-spec-2-timers.md), [Spec 1 — the spine](2026-09-08-spec-1-the-spine.md), [Spec 0 — clean-room charter](2026-09-08-clean-room-charter.md)
 **Target client:** EverQuest Legends. Not Live, not Project Quarm.
 

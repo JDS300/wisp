@@ -84,6 +84,101 @@ the usual fixes for that on Linux (winecfg fullscreen capture, or gamescope's
 to a pointer grab; something that never wants them cannot. Configuration lives
 in the CLI and a config file instead.
 
+## The HUD
+
+The HUD is a screen-sized transparent frame with two kinds of block drawn on
+it, placed where the player put them:
+
+| Block | Draws |
+|---|---|
+| `meter` | Player rows with bars, `shows = damage` or `healing`, `segment = fight` or `session`. You are a row, sorted in place with the others and highlighted, never listed twice. The header carries the display type, the segment, and the fight clock. A config may hold more than one `meter` block. |
+| `timers` | Every active timer, grouped under its target, each row a draining bar coloured by kind (`mez`, `slow`, `dot` with its damage type, `debuff`), with warning and critical colour states as remaining time runs down. One instance. |
+
+Each block has an `anchor`, a pixel `offset` from it, a `width`, a row cap
+(`rows`), and a `hidden` flag that draws it only as a ghost in HUD mode.
+
+### Editing the layout in place — HUD mode
+
+`wisp-hud` polls the X server's key state from its own connection (the same
+mechanism MangoHud's toggle key uses), so it never asks for focus. Outside
+HUD mode it recognises one chord, `ctrl+shift+grave` by default. The chord is
+edge-triggered — holding it does not repeat.
+
+Inside HUD mode, every block gets a dashed outline and a name tag, the
+selected one a solid outline and a halo, and a help strip runs along the
+bottom edge:
+
+| Key | Action |
+|---|---|
+| `↑ ↓ ← →` | move the selected block by 4 px; with Shift, 24 px |
+| `Tab` / `Shift+Tab` | select the next / previous block |
+| `[` / `]` | a meter's `shows`: damage ↔ healing |
+| `F` | a meter's `segment`: fight ↔ session |
+| `+` / `-` | `rows` up or down by one |
+| `H` | toggle `hidden` |
+| `Esc`, or the chord again | save and exit |
+
+`Esc` and the chord both save the layout atomically and exit HUD mode. The
+game keeps receiving every key it received before — the HUD reads keyboard
+state, it never consumes an event.
+
+### Editing the layout from a terminal — `wisp hud`
+
+For setup beside the game, or from a script. Every verb edits the config file
+and exits; a running HUD picks the change up through live reload within half
+a second — nothing talks to it over a socket.
+
+| Command | Effect |
+|---|---|
+| `wisp hud` | lists the blocks: index, kind, shows, segment, anchor, offset, width, rows, hidden |
+| `wisp hud place <n> <anchor> <x> <y>` | sets a block's anchor and offset |
+| `wisp hud nudge <n> <dx> <dy>` | moves a block by a pixel delta |
+| `wisp hud set <n> <key> <value>` | any block key (`shows`, `segment`, `width`, `rows`, `hidden`) |
+| `wisp hud add meter\|timers` / `wisp hud remove <n>` | adds or removes an instance |
+| `wisp hud scale <x>` | sets `hud.scale` |
+
+### The config file
+
+TOML, read with the `toml` crate. The HUD polls the file's mtime every
+500 ms and re-lays out on change; a file that fails to parse is reported once
+on stderr and the last good layout stays up.
+
+```toml
+log = "/mnt/.../eqlog_Daggo_freeport.txt"   # or logs_dir; as in Spec 4
+backend = "gamescope"
+
+[hud]
+scale = 1.0          # multiplies every size
+chord = "ctrl+shift+grave"
+output = "DP-1"      # layer-shell only: which wl_output; absent = compositor's choice
+
+[[block]]
+kind = "meter"
+shows = "damage"     # damage | healing
+segment = "fight"    # fight | session
+anchor = "top-left"
+offset = [20, 120]
+width = 290
+rows = 8
+
+[[block]]
+kind = "meter"
+shows = "healing"
+segment = "fight"
+anchor = "top-left"
+offset = [20, 400]
+width = 290
+rows = 4
+hidden = true
+
+[[block]]
+kind = "timers"
+anchor = "top-right"
+offset = [20, 120]
+width = 330
+rows = 12
+```
+
 ## Installing
 
 Two prebuilt artifacts — the tarball and the AppImage — plus a local Flatpak
@@ -138,6 +233,7 @@ gamescope's from the start, so the Flatpak is natural there instead.
 | 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — verified live over EverQuest on the desktop (mez timer: row on landing, warning at 10 s, critical at 5 s, cleared at expiry) · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
 | 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — verified live over EverQuest on the desktop (personal line tracking DPS, group rows without you); close, linger, zoning and HUD restart not specifically exercised · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
 | 4 | [Packaging and distribution](docs/specs/2026-09-09-spec-4-packaging.md) | Implemented — build, test, clippy, the musl static build, `packaging/release.sh` and the local Flatpak build verified locally; the first CI run on a pushed tag, the Flatpak's live checks against the game, and Milestone 6 (live over EverQuest Legends on the desktop) pending JDS300 · [implementation plan](docs/plans/2026-09-09-spec-4-packaging.md) |
+| 5 | [The HUD — Console look, keyboard layout mode, TOML config](docs/specs/2026-09-10-spec-5-the-hud.md) | Implemented, automated gates green — Milestone 4 (HUD mode over the running game) and Milestone 7 (live verification) pending JDS300 · [implementation plan](docs/plans/2026-09-10-spec-5-the-hud.md) |
 
 Spec 1's overlay backends and log parser are implemented and covered by
 automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and

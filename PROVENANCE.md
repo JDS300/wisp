@@ -755,3 +755,34 @@ was a throwaway binary in the session scratchpad and was not committed.
 
 Primary sources: the client's `spells_us.txt` (resist type at field 29, the
 effect list at field 172; facts in Spec 5 Appendix B) and the running game.
+
+### 2026-09-11 — Spec 5 implemented
+
+**What moved: nothing.** Spec 5's eight implementation tasks (T1–T8) wrote
+`wisp-proto` v4, `wispd`'s spell-table timer classification, `wisp-config`'s
+TOML layout model, `wisp-hud`'s canvas/theme/model/paint stack and HUD-mode
+key polling, and the `wisp hud` CLI verbs entirely from the design in Spec 5
+and its own tasks — no file from Tier A, Tier B or any other tree entered
+this repository. The Tier C names remain absent, checked with `git grep`
+before this commit as before every prior one.
+
+**The fonts.** T4 vendored two more faces from the same `ttf-dejavu 2.37`
+Arch package (`2.37+18+g9b5d1b2f-8`) as the already-vendored Mono, so the
+canvas layer's proportional text and the existing monospace text share one
+licence file:
+
+- `assets/DejaVuSans.ttf` sha256
+  `6038a160b491e121c1f12c7bccb4a9c8730296e3adc1086a059404ed84b7451c`
+- `assets/DejaVuSans-Bold.ttf` sha256
+  `b5d64817b6331723b5e59eaaa6db90057cbed58e9733f65687f110638192359f`
+
+Both re-verified against the files in `assets/` for this entry. `assets/DejaVu.LICENSE` (renamed from `assets/DejaVuSansMono.LICENSE` in T4) covers
+all three faces verbatim, and `THIRD_PARTY.md`'s vendored-font entry says so.
+
+**The spike's standing rule.** Spec 5 §3.1 restated Spec 1 §3 after the
+2026-09-10 gamescope input spike (Appendix A): the HUD never changes focus —
+it never asks for keyboard or pointer focus, never sets a non-empty input
+region, and never sets the Steam overlay atoms. `docs/specs/2026-09-08-spec-1-the-spine.md`
+carries a one-line amendment pointing to this rule; §3's own text is
+unchanged, since the rule it states was right all along and only the reason
+given for it needed correcting.

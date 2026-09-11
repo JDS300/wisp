@@ -28,6 +28,32 @@ Recorded per the [clean-room charter](docs/specs/2026-09-08-clean-room-charter.m
   own install. Wisp uses the documented layout, confirmed against the local
   files, and none of that project's parser, database or site data.
 
+## Compiled in
+
+Rust crates from crates.io, statically linked into the shipped binaries.
+Recorded here because Spec 5 replaced `wisp-config`'s flat key/value format
+with TOML, pulling in a crate family none of the earlier specs' dependency
+trees had:
+
+- **`toml`** 0.9.12 — MIT OR Apache-2.0. Parses and writes `wisp-config`'s
+  TOML config file.
+- **`serde_spanned`** 1.1.1 — MIT OR Apache-2.0. `toml`'s transitive
+  dependency, span-tracking wrapper types for error messages.
+- **`toml_datetime`** 0.7.5 — MIT OR Apache-2.0. `toml`'s transitive
+  dependency, the RFC 3339 datetime type.
+- **`toml_parser`** 1.1.3 — MIT OR Apache-2.0. `toml`'s transitive
+  dependency, the TOML tokenizer and parser (this crate's line is what the
+  brief calls "toml_edit/toml_parser" — the current `toml` major version
+  uses `toml_parser`, not `toml_edit`).
+- **`toml_writer`** 1.1.2 — MIT OR Apache-2.0. `toml`'s transitive
+  dependency, TOML serialization.
+- **`winnow`** 0.7.15 and 1.0.4 — MIT. The parser-combinator crate `toml`
+  and `toml_parser` each depend on; two versions coexist in the dependency
+  graph, both MIT.
+
+`cargo tree -p wisp-config -e normal` is the source for this list; `cargo
+metadata`'s `license` field for each package is the source for the licences.
+
 ## Packaging tooling
 
 Used at build time, not vendored, except where noted:
