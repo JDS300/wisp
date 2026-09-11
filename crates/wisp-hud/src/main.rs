@@ -5,7 +5,7 @@ mod backend;
 mod draw;
 mod text;
 
-use backend::OverlayBackend;
+use backend::{OverlayBackend, Rect};
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use wisp_config::config::{Config, Key};
@@ -39,27 +39,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let renderer = text::Renderer::new(scale);
 
-    // Size the window from the renderer: the kill line, the personal line,
-    // MAX_ROWS timer rows, then the full set of meter rows, all at their
-    // widest, padded, so the HUD never clips at this scale.
-    const PAD: u32 = 8;
-    let widest = std::iter::once(text::Line { text: "999999 kills".to_string(), rgb: WHITE })
-        .chain(std::iter::once(text::Line { text: "DPS 99999  in 9999/s  HPS 9999   99:59".to_string(), rgb: WHITE }))
-        .chain((0..MAX_ROWS).map(|_| text::Line { text: format_row("W".repeat(TARGET_COLS).as_str(), &"W".repeat(SPELL_COLS), 9999), rgb: WHITE }))
-        .chain((0..MAX_DAMAGE_ROWS + MAX_HEALING_ROWS).map(|_| text::Line {
-            text: format!("{} {:>7} {:>5}/s  +", "W".repeat(NAME_COLS), "999.9k", 99999),
-            rgb: WHITE,
-        }))
-        .collect::<Vec<_>>();
-    let probe = renderer.render_lines(&widest);
-    let (w, h) = (probe.width + 2 * PAD, probe.height + 2 * PAD);
-
+    // Every backend now sizes its own surface to the output; none of them
+    // take a width or height any more (Task 6). Wiring `--output` through to
+    // here is not this task's business, so every backend is asked for the
+    // compositor's own choice of output.
     let mut surface: Box<dyn OverlayBackend> = match kind {
         BackendKind::GamescopeX11 => {
-            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(w, h))
+            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(None))
         }
-        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(w, h)),
-        BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(w, h)),
+        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(None)),
+        BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(None)),
     };
     surface.attach()?;
 
@@ -71,7 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match item {
             Ok(snap) => {
                 let frame = renderer.render_lines(&hud_lines(&snap));
-                if let Err(e) = surface.present(&frame) {
+                // Until Task 7 replaces the renderer, `frame` is still much
+                // smaller than the now-output-sized window; the single dirty
+                // rect covering it lands the old HUD at (0, 0) exactly as it
+                // always drew.
+                if let Err(e) = surface.present(&frame, &[Rect::full(&frame)]) {
                     eprintln!("wisp-hud: {e}");
                     std::process::exit(1);
                 }

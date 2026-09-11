@@ -35,8 +35,12 @@ impl std::error::Error for BackendError {}
 /// Every implementation must produce a surface that never takes focus and
 /// never receives pointer or keyboard input. See the charter invariant.
 pub trait OverlayBackend {
-    fn attach(&mut self) -> Result<(), BackendError>;
-    fn present(&mut self, frame: &Frame) -> Result<(), BackendError>;
+    /// Creates and maps the surface at the output's full size and returns
+    /// that size.
+    fn attach(&mut self) -> Result<(u32, u32), BackendError>;
+    /// Uploads `dirty` sub-rectangles of `frame` (which is output-sized). An
+    /// empty `dirty` uploads nothing and returns `Ok`.
+    fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError>;
 }
 
 /// An axis-aligned pixel rectangle, top-left origin. `x`/`y` are signed so a

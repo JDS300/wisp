@@ -11,7 +11,7 @@
 //! identical between them, so it lives in one place instead of being
 //! duplicated.
 
-use crate::backend::{BackendError, Frame};
+use crate::backend::{BackendError, Frame, Rect};
 use x11rb::connection::Connection;
 use x11rb::protocol::shape;
 use x11rb::protocol::xfixes::ConnectionExt as XfixesExt;
@@ -22,7 +22,7 @@ use x11rb::COPY_DEPTH_FROM_PARENT;
 
 /// Which pixel layout the window ended up with. Both give a window the
 /// compositor or window manager can display; only the byte conversion in
-/// `frame_to_wire` differs.
+/// `frame_to_wire_rect` differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     /// A native 32-bit ARGB visual: real, working alpha.
@@ -55,26 +55,25 @@ pub struct X11Surface {
     format: PixelFormat,
     /// The server's byte order for image data, read once at connect time.
     msb_first: bool,
-    /// Set the first time `present` sees a frame bigger than the window, so
-    /// the clip warning is printed once rather than every frame at 5 Hz.
-    warned_clipped: bool,
 }
 
 impl X11Surface {
-    /// Connects to the X server and creates a `width` x `height` window at
-    /// the root of the default screen. `override_redirect` bypasses the
+    /// Connects to the X server and creates a window the size of the default
+    /// screen's root window, at (0, 0). `override_redirect` bypasses the
     /// window manager entirely (gamescope's XWayland); when false, the
     /// window is an ordinary WM-managed window (the plain-window fallback).
     ///
     /// The window always carries an empty XFixes input region -- the
     /// invariant that the HUD never takes input applies unconditionally.
-    pub fn create(width: u32, height: u32, override_redirect: bool) -> Result<X11Surface, BackendError> {
+    pub fn create(override_redirect: bool) -> Result<X11Surface, BackendError> {
         let (conn, screen_num) =
             x11rb::connect(None).map_err(|e| BackendError::Unavailable(e.to_string()))?;
 
         let msb_first = conn.setup().image_byte_order == ImageOrder::MSB_FIRST;
         let screen = conn.setup().roots[screen_num].clone();
         let root = screen.root;
+        let width = screen.width_in_pixels as u32;
+        let height = screen.height_in_pixels as u32;
 
         // Prefer a 32-bit ARGB visual so the window carries real alpha. If
         // the server offers none, fall back to the root visual at its own
@@ -183,8 +182,12 @@ impl X11Surface {
             height,
             format,
             msb_first,
-            warned_clipped: false,
         })
+    }
+
+    /// The window's size: the root window's, per [`X11Surface::create`].
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// Interns `name` and sets it on the window as a single-value CARDINAL
@@ -207,42 +210,57 @@ impl X11Surface {
         Ok(())
     }
 
-    pub fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
-        if !self.warned_clipped && (frame.width > self.width || frame.height > self.height) {
-            eprintln!(
-                "wisp-hud: frame {}x{} exceeds the window {}x{}; clipping",
-                frame.width, frame.height, self.width, self.height
-            );
-            self.warned_clipped = true;
+    /// Uploads `dirty` sub-rectangles of `frame` (output-sized, same as the
+    /// window) with one `put_image` per rect, clipped to the window and
+    /// positioned at the rect's own origin. No `clear_area`: the frame is
+    /// transparent where nothing is drawn, and a rect that became empty
+    /// arrives already carrying transparent pixels via the canvas's own
+    /// `clear`, so re-uploading it is enough to erase what was there.
+    pub fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError> {
+        if dirty.is_empty() {
+            return Ok(());
         }
-        let (wire, draw_w, draw_h) = frame_to_wire(frame, self.width, self.height, self.format, self.msb_first);
-        if draw_w == 0 || draw_h == 0 {
+        let window = Rect::new(0, 0, self.width, self.height);
+        let mut draws = Vec::with_capacity(dirty.len());
+        for &rect in dirty {
+            let Some(clipped) = rect.intersect(window) else { continue };
+            let (wire, w, h) = frame_to_wire_rect(frame, clipped, self.format, self.msb_first);
+            if w == 0 || h == 0 {
+                continue;
+            }
+            draws.push((clipped.x, clipped.y, wire, w, h));
+        }
+        if draws.is_empty() {
             return Ok(());
         }
 
-        // 0-width/height is X11 shorthand for "to the edge of the window",
-        // clearing anything a shorter previous frame left behind.
-        let _ = self.conn.clear_area(false, self.window, 0, 0, 0, 0);
         // `.check()` forces a round trip so a dead window (BadDrawable,
         // BadWindow -- the compositor closed us, or the window was
         // destroyed out from under us) is reported here rather than
-        // silently dropped. One round trip per frame at 5 Hz is cheap.
-        self.conn
-            .put_image(
-                ImageFormat::Z_PIXMAP,
-                self.window,
-                self.gc,
-                draw_w as u16,
-                draw_h as u16,
-                0,
-                0,
-                0,
-                self.depth,
-                &wire,
-            )
-            .map_err(|e| BackendError::Failed(e.to_string()))?
-            .check()
-            .map_err(|e| BackendError::Failed(e.to_string()))?;
+        // silently dropped. Only the last request in the batch is checked:
+        // one round trip per frame at 5 Hz is cheap, one per dirty rect is
+        // not.
+        let last = draws.len() - 1;
+        for (i, (x, y, wire, w, h)) in draws.iter().enumerate() {
+            let cookie = self
+                .conn
+                .put_image(
+                    ImageFormat::Z_PIXMAP,
+                    self.window,
+                    self.gc,
+                    *w as u16,
+                    *h as u16,
+                    *x as i16,
+                    *y as i16,
+                    0,
+                    self.depth,
+                    wire,
+                )
+                .map_err(|e| BackendError::Failed(e.to_string()))?;
+            if i == last {
+                cookie.check().map_err(|e| BackendError::Failed(e.to_string()))?;
+            }
+        }
         self.conn
             .flush()
             .map_err(|e| BackendError::Failed(e.to_string()))?;
@@ -261,28 +279,28 @@ pub(crate) fn intern_atom(conn: &RustConnection, name: &str) -> Result<Atom, Bac
         .map(|reply| reply.atom)
 }
 
-/// Converts a `Frame` (premultiplied RGBA, top-left origin) into the wire
-/// bytes for `put_image`, clipped to `window_width` x `window_height` if the
-/// frame is bigger than the window. Never resizes the window.
+/// Converts one sub-rectangle of a `Frame` (premultiplied RGBA, top-left
+/// origin) into the wire bytes for `put_image`: the bytes of `rect ∩ frame`,
+/// clipped to the frame's own bounds so a rect that runs off the frame's edge
+/// -- or entirely misses it -- never indexes out of bounds.
 ///
-/// Returns the wire bytes and the clipped width and height actually drawn.
-pub fn frame_to_wire(
+/// Returns the wire bytes and the clipped width and height actually drawn;
+/// either is 0 when `rect` does not overlap the frame at all.
+pub fn frame_to_wire_rect(
     frame: &Frame,
-    window_width: u32,
-    window_height: u32,
+    rect: Rect,
     format: PixelFormat,
     msb_first: bool,
 ) -> (Vec<u8>, u32, u32) {
-    if frame.width == 0 || frame.height == 0 {
+    let Some(clipped) = rect.intersect(Rect::full(frame)) else {
         return (Vec::new(), 0, 0);
-    }
+    };
 
-    let draw_w = frame.width.min(window_width);
-    let draw_h = frame.height.min(window_height);
-
-    let mut wire = Vec::with_capacity((draw_w * draw_h * 4) as usize);
-    for y in 0..draw_h {
-        for x in 0..draw_w {
+    let mut wire = Vec::with_capacity((clipped.w * clipped.h * 4) as usize);
+    for row in 0..clipped.h {
+        for col in 0..clipped.w {
+            let x = (clipped.x + col as i32) as u32;
+            let y = (clipped.y + row as i32) as u32;
             let o = ((y * frame.width + x) * 4) as usize;
             let r = frame.rgba[o];
             let g = frame.rgba[o + 1];
@@ -300,7 +318,7 @@ pub fn frame_to_wire(
         }
     }
 
-    (wire, draw_w, draw_h)
+    (wire, clipped.w, clipped.h)
 }
 
 #[cfg(test)]
@@ -308,7 +326,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_to_wire_converts_2x1_frame_for_both_pixel_formats() {
+    fn frame_to_wire_rect_converts_2x1_frame_for_both_pixel_formats() {
         let frame = Frame {
             width: 2,
             height: 1,
@@ -317,27 +335,28 @@ mod tests {
                 50, 60, 70, 80, // pixel 1
             ],
         };
+        let full = Rect::full(&frame);
 
         // ARGB32, LSB-first server: bytes go B, G, R, A per pixel.
-        let (wire, w, h) = frame_to_wire(&frame, 10, 10, PixelFormat::Argb32, false);
+        let (wire, w, h) = frame_to_wire_rect(&frame, full, PixelFormat::Argb32, false);
         assert_eq!((w, h), (2, 1));
         assert_eq!(wire, vec![30, 20, 10, 40, 70, 60, 50, 80]);
 
         // ARGB32, MSB-first server: bytes go A, R, G, B per pixel.
-        let (wire, _, _) = frame_to_wire(&frame, 10, 10, PixelFormat::Argb32, true);
+        let (wire, _, _) = frame_to_wire_rect(&frame, full, PixelFormat::Argb32, true);
         assert_eq!(wire, vec![40, 10, 20, 30, 80, 50, 60, 70]);
 
         // BGRX24 drops alpha to 0 regardless of byte order.
-        let (wire, _, _) = frame_to_wire(&frame, 10, 10, PixelFormat::Bgrx24, false);
+        let (wire, _, _) = frame_to_wire_rect(&frame, full, PixelFormat::Bgrx24, false);
         assert_eq!(wire, vec![30, 20, 10, 0, 70, 60, 50, 0]);
     }
 
     #[test]
-    fn frame_to_wire_clips_to_the_window_size() {
-        // A frame wider and taller than the window, 4x3, clipped to a 2x2
-        // window. Every pixel gets a distinct, coordinate-derived colour (R =
-        // x, G = y, B = 0xAB, A = 0xFF) so a bug that reads with the clipped
-        // width as the row stride -- rather than the frame's own width -- is
+    fn frame_to_wire_rect_clips_using_the_frames_own_stride() {
+        // A rect smaller than the 4x3 frame it's drawn from, clipped to 2x2.
+        // Every pixel gets a distinct, coordinate-derived colour (R = x, G =
+        // y, B = 0xAB, A = 0xFF) so a bug that reads with the clipped width
+        // as the row stride -- rather than the frame's own width -- is
         // caught: it would pull the wrong bytes for every row after the
         // first, not just produce the right byte count.
         let width = 4u32;
@@ -354,7 +373,8 @@ mod tests {
         }
         let frame = Frame { width, height, rgba };
 
-        let (wire, draw_w, draw_h) = frame_to_wire(&frame, 2, 2, PixelFormat::Argb32, true);
+        let (wire, draw_w, draw_h) =
+            frame_to_wire_rect(&frame, Rect::new(0, 0, 2, 2), PixelFormat::Argb32, true);
         assert_eq!((draw_w, draw_h), (2, 2));
         assert_eq!(wire.len(), (draw_w * draw_h * 4) as usize);
 
@@ -369,5 +389,19 @@ mod tests {
         // First pixel of the last kept row: source (0, 1) -- not (0, 2) or
         // some offset derived from the frame's full width.
         assert_eq!(&wire[8..12], &pixel(0, 1));
+    }
+
+    #[test]
+    fn frame_to_wire_rect_extracts_the_clipped_sub_rectangle() {
+        let frame = Frame { width: 3, height: 2, rgba: (0..24).collect() }; // pixel (x,y) starts at (y*3+x)*4
+        let (bytes, w, h) = frame_to_wire_rect(&frame, Rect::new(1, 0, 5, 5), PixelFormat::Argb32, false);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(&bytes[0..4], &[6, 5, 4, 7], "pixel (1,0) as BGRA");
+        // Row-major, row outer / column inner -- the same order the older
+        // `frame_to_wire` established and this file's stride test still
+        // checks: index 2 of a 2-wide output is (row 1, col 0), i.e. pixel
+        // (1, 1), not index 3 (which is (row 1, col 1), pixel (2, 1)).
+        assert_eq!(&bytes[8..12], &[18, 17, 16, 19], "pixel (1,1)");
+        assert_eq!(frame_to_wire_rect(&frame, Rect::new(10, 10, 1, 1), PixelFormat::Argb32, false).0.len(), 0);
     }
 }

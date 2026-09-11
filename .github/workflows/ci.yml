@@ -41,6 +41,10 @@ jobs:
       - run: cargo build --workspace --locked
 
       - run: xvfb-run -a cargo test --workspace --locked
+        env:
+          # Runs crates/wisp-hud/tests/readback.rs, gated off by default so a
+          # bare `cargo test` never opens a window.
+          WISP_HUD_READBACK: "1"
 
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 

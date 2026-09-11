@@ -8,29 +8,26 @@
 //! No injection, no LD_PRELOAD, no Vulkan layer.
 
 use crate::backend::x11_common::X11Surface;
-use crate::backend::{BackendError, Frame, OverlayBackend};
+use crate::backend::{BackendError, Frame, OverlayBackend, Rect};
 
 pub struct GamescopeX11Backend {
-    width: u32,
-    height: u32,
     surface: Option<X11Surface>,
 }
 
 impl GamescopeX11Backend {
-    pub fn new(width: u32, height: u32) -> Self {
-        GamescopeX11Backend {
-            width,
-            height,
-            surface: None,
-        }
+    /// `output` is ignored: an X11 window has no notion of which Wayland
+    /// output it lives on, and `X11Surface::create` always sizes itself to
+    /// the default screen's root window.
+    pub fn new(_output: Option<&str>) -> Self {
+        GamescopeX11Backend { surface: None }
     }
 }
 
 impl OverlayBackend for GamescopeX11Backend {
-    fn attach(&mut self) -> Result<(), BackendError> {
+    fn attach(&mut self) -> Result<(u32, u32), BackendError> {
         // override_redirect = true: bypass the window manager entirely,
         // gamescope composites us directly.
-        let surface = X11Surface::create(self.width, self.height, true)?;
+        let surface = X11Surface::create(true)?;
 
         // The two atoms that make gamescope treat this as the overlay plane.
         for (name, value) in [
@@ -41,13 +38,14 @@ impl OverlayBackend for GamescopeX11Backend {
         }
 
         surface.map()?;
+        let size = surface.size();
         self.surface = Some(surface);
-        Ok(())
+        Ok(size)
     }
 
-    fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
+    fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError> {
         match &mut self.surface {
-            Some(surface) => surface.present(frame),
+            Some(surface) => surface.present(frame, dirty),
             None => Ok(()),
         }
     }

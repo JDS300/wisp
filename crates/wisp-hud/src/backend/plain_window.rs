@@ -8,34 +8,44 @@
 //! in the README rather than hidden.
 
 use crate::backend::x11_common::{intern_atom, X11Surface};
-use crate::backend::{BackendError, Frame, OverlayBackend};
+use crate::backend::{BackendError, Frame, OverlayBackend, Rect};
 use x11rb::connection::Connection;
 use x11rb::properties::WmHints;
 use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
 pub struct PlainWindowBackend {
-    width: u32,
-    height: u32,
     surface: Option<X11Surface>,
 }
 
 impl PlainWindowBackend {
-    pub fn new(width: u32, height: u32) -> Self {
-        PlainWindowBackend {
-            width,
-            height,
-            surface: None,
-        }
+    /// `output` is ignored, for the same reason it is on the gamescope
+    /// backend: this is plain X11, sized to the default screen's root
+    /// window.
+    pub fn new(_output: Option<&str>) -> Self {
+        PlainWindowBackend { surface: None }
     }
 }
 
 impl OverlayBackend for PlainWindowBackend {
-    fn attach(&mut self) -> Result<(), BackendError> {
+    fn attach(&mut self) -> Result<(u32, u32), BackendError> {
         // override_redirect = false: this is an ordinary WM-managed window,
         // not a gamescope overlay plane.
-        let surface = X11Surface::create(self.width, self.height, false)?;
+        let surface = X11Surface::create(false)?;
         let conn = &surface.conn;
+
+        // So the readback test (and anyone else inspecting the window tree)
+        // can find this window by name.
+        let net_wm_name_atom = intern_atom(conn, "_NET_WM_NAME")?;
+        let utf8_string_atom = intern_atom(conn, "UTF8_STRING")?;
+        conn.change_property8(
+            PropMode::REPLACE,
+            surface.window,
+            net_wm_name_atom,
+            utf8_string_atom,
+            b"wisp-hud",
+        )
+        .map_err(|e| BackendError::Failed(e.to_string()))?;
 
         // REQUIRED for the invariant: _NET_WM_WINDOW_TYPE_DOCK. Per the EWMH
         // spec a dock is undecorated and kept above by definition -- unlike
@@ -126,13 +136,14 @@ impl OverlayBackend for PlainWindowBackend {
         conn.flush()
             .map_err(|e| BackendError::Failed(e.to_string()))?;
 
+        let size = surface.size();
         self.surface = Some(surface);
-        Ok(())
+        Ok(size)
     }
 
-    fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
+    fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError> {
         match &mut self.surface {
-            Some(surface) => surface.present(frame),
+            Some(surface) => surface.present(frame, dirty),
             None => Ok(()),
         }
     }
