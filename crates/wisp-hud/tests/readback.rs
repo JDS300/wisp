@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Atom, ConnectionExt, ImageFormat, ImageOrder, Window};
+use x11rb::protocol::xproto::{Atom, ConnectionExt, ImageFormat, Window};
 use x11rb::rust_connection::RustConnection;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,6 +74,10 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
         root_size,
         "the HUD window is sized to the root window"
     );
+    // So a CI log says which of X11Surface's two pixel formats actually ran:
+    // 32 is the depth-32 Argb32 path, anything else (almost always 24) is the
+    // Bgrx24 fallback.
+    println!("window depth: {}", geom.depth);
 
     let image = conn
         .get_image(ImageFormat::Z_PIXMAP, window, 0, 0, geom.width, geom.height, !0)
@@ -81,10 +85,17 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
         .reply()
         .unwrap();
 
-    let msb_first = conn.setup().image_byte_order == ImageOrder::MSB_FIRST;
-    let alpha_offset = if msb_first { 0 } else { 3 };
-    let any_opaque = image.data.chunks_exact(4).any(|px| px[alpha_offset] != 0);
-    assert!(any_opaque, "expected at least one non-transparent pixel in the HUD window");
+    // Checked per-channel, not per-alpha: X11Surface's depth-24 BGRX
+    // fallback (x11_common.rs, PixelFormat::Bgrx24) always writes alpha 0,
+    // so an alpha-only check would fail every run under a server that offers
+    // no depth-32 visual (Xvfb on ubuntu-latest, for one) even though the HUD
+    // painted real (opaque, non-black) pixels. Any non-zero byte in a pixel
+    // -- R, G, B or A, in whichever order the server's byte order puts them
+    // -- is enough: under Argb32 a painted pixel has non-zero RGB and alpha;
+    // under Bgrx24 the window's own background is black with alpha forced to
+    // 0, so the old renderer's white text still shows up as non-zero RGB.
+    let any_painted = image.data.chunks_exact(4).any(|px| px.iter().any(|&byte| byte != 0));
+    assert!(any_painted, "expected at least one painted (non-zero-channel) pixel in the HUD window");
 }
 
 // ---------------------------------------------------------------------------
