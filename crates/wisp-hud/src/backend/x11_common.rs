@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MIT
 // crates/wisp-hud/src/backend/x11_common.rs
 //! Shared X11 plumbing used by every X11-backed overlay backend: connecting,
-//! picking a depth-32 ARGB visual with a colormap (or falling back to the
-//! root visual's depth), creating the window, applying the empty XFixes
-//! input region the invariant requires on every backend, and the pure
-//! Frame -> wire pixel conversion that `present` uses.
+//! taking a depth-32 ARGB visual with a colormap, creating the window,
+//! applying the empty XFixes input region the invariant requires on every
+//! backend, and the pure Frame -> wire pixel conversion that `present` uses.
+//!
+//! The depth-32 visual is a requirement, not a preference. There used to be a
+//! fallback to the root visual's own depth with a black `background_pixel`,
+//! which was harmless while the window was a few hundred pixels across; Task
+//! 6 made the window the whole root window and made `present` upload only the
+//! dirty rects, so every pixel no block covers keeps the window's background
+//! -- opaque black across the entire screen, with the HUD floating on it.
+//! Depth 24 has no alpha channel, so no background setting makes that window
+//! translucent; the only honest answers are to refuse or to map an opaque
+//! screen-sized window, and this one refuses.
 //!
 //! `gamescope_x11` and `plain_window` differ only in a handful of atoms and
 //! whether the window bypasses the window manager; everything else here is
@@ -18,20 +27,11 @@ use x11rb::protocol::xfixes::ConnectionExt as XfixesExt;
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
-use x11rb::COPY_DEPTH_FROM_PARENT;
 
-/// Which pixel layout the window ended up with. Both give a window the
-/// compositor or window manager can display; only the byte conversion in
-/// `frame_to_wire_rect` differs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PixelFormat {
-    /// A native 32-bit ARGB visual: real, working alpha.
-    Argb32,
-    /// No depth-32 visual was offered by this X server; fall back to the root
-    /// visual at its native depth (almost always 24) with a black
-    /// background. No real alpha -- the frame's alpha byte is dropped.
-    Bgrx24,
-}
+/// The one window depth this HUD will use. See the module header: a surface
+/// with no alpha channel cannot be a translucent overlay, and one the size of
+/// the screen with no alpha is an opaque screen.
+const DEPTH_32: u8 = 32;
 
 /// An X11 window set up as a paintable, input-inert overlay surface.
 pub struct X11Surface {
@@ -46,13 +46,12 @@ pub struct X11Surface {
     /// documents that a depth-32 surface owns one.
     #[allow(dead_code)]
     colormap: Colormap,
-    /// The depth actually in use once `create` has resolved
-    /// `COPY_DEPTH_FROM_PARENT` to a real number. Needed by `present`, which
-    /// -- unlike `create_window` -- has no "copy from parent" shorthand.
+    /// The window's depth, which is always 32 -- `create` refuses anything
+    /// else. Carried rather than spelled at the `put_image` call site so the
+    /// two cannot drift.
     depth: u8,
     width: u32,
     height: u32,
-    format: PixelFormat,
     /// The server's byte order for image data, read once at connect time.
     msb_first: bool,
 }
@@ -65,6 +64,10 @@ impl X11Surface {
     ///
     /// The window always carries an empty XFixes input region -- the
     /// invariant that the HUD never takes input applies unconditionally.
+    ///
+    /// Refuses with [`BackendError::Unsupported`] when the server offers no
+    /// depth-32 visual: see this module's own header for why there is no
+    /// fallback.
     pub fn create(override_redirect: bool) -> Result<X11Surface, BackendError> {
         let (conn, screen_num) =
             x11rb::connect(None).map_err(|e| BackendError::Unavailable(e.to_string()))?;
@@ -75,43 +78,35 @@ impl X11Surface {
         let width = screen.width_in_pixels as u32;
         let height = screen.height_in_pixels as u32;
 
-        // Prefer a 32-bit ARGB visual so the window carries real alpha. If
-        // the server offers none, fall back to the root visual at its own
-        // depth with a black background.
-        let depth32_visual = screen
+        // A 32-bit ARGB visual, or nothing. Without one the window has no
+        // alpha channel at all, and a screen-sized window with no alpha is an
+        // opaque screen-sized window -- which is the one thing an overlay must
+        // never be, whatever it paints inside it.
+        let Some(visual) = screen
             .allowed_depths
             .iter()
             .find(|d| d.depth == 32)
             .and_then(|d| d.visuals.first())
-            .map(|v| v.visual_id);
+            .map(|v| v.visual_id)
+        else {
+            return Err(BackendError::Unsupported(format!(
+                "this X server offers no 32-bit (depth-32 ARGB) visual, only depth {}; \
+                 the HUD is a translucent overlay the size of the screen, and refuses \
+                 to map an opaque one instead",
+                screen.root_depth
+            )));
+        };
 
         let window = conn
             .generate_id()
             .map_err(|e| BackendError::Failed(e.to_string()))?;
 
-        let (create_depth, actual_depth, visual, format, colormap) =
-            if let Some(visual_id) = depth32_visual {
-                let colormap = conn
-                    .generate_id()
-                    .map_err(|e| BackendError::Failed(e.to_string()))?;
-                conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual_id)
-                    .map_err(|e| BackendError::Failed(e.to_string()))?;
-                eprintln!("wisp-hud: x11 backend: using a depth-32 ARGB visual");
-                (32u8, 32u8, visual_id, PixelFormat::Argb32, Some(colormap))
-            } else {
-                eprintln!(
-                    "wisp-hud: x11 backend: no depth-32 visual offered, \
-                     falling back to depth-{} BGRX",
-                    screen.root_depth
-                );
-                (
-                    COPY_DEPTH_FROM_PARENT,
-                    screen.root_depth,
-                    screen.root_visual,
-                    PixelFormat::Bgrx24,
-                    None,
-                )
-            };
+        let colormap = conn
+            .generate_id()
+            .map_err(|e| BackendError::Failed(e.to_string()))?;
+        conn.create_colormap(ColormapAlloc::NONE, colormap, root, visual)
+            .map_err(|e| BackendError::Failed(e.to_string()))?;
+        eprintln!("wisp-hud: x11 backend: using a depth-32 ARGB visual");
 
         let mut values = CreateWindowAux::new()
             // Deliberately no input events, and no EXPOSURE either: nothing
@@ -122,18 +117,17 @@ impl X11Surface {
         if override_redirect {
             values = values.override_redirect(1u32);
         }
-        let values = match colormap {
-            // A non-default-depth window needs all three of these, or the
-            // server rejects window creation with BadMatch.
-            Some(cmap) => values
-                .colormap(cmap)
-                .border_pixel(0u32)
-                .background_pixel(0u32),
-            None => values.background_pixel(screen.black_pixel),
-        };
+        // A non-default-depth window needs all three of these, or the server
+        // rejects window creation with BadMatch. `background_pixel(0)` is a
+        // fully transparent background, which is what every pixel no block
+        // covers must be.
+        let values = values
+            .colormap(colormap)
+            .border_pixel(0u32)
+            .background_pixel(0u32);
 
         conn.create_window(
-            create_depth,
+            DEPTH_32,
             window,
             root,
             0,
@@ -176,11 +170,10 @@ impl X11Surface {
             window,
             root,
             gc,
-            colormap: colormap.unwrap_or(0),
-            depth: actual_depth,
+            colormap,
+            depth: DEPTH_32,
             width,
             height,
-            format,
             msb_first,
         })
     }
@@ -224,7 +217,7 @@ impl X11Surface {
         let mut draws = Vec::with_capacity(dirty.len());
         for &rect in dirty {
             let Some(clipped) = rect.intersect(window) else { continue };
-            let (wire, w, h) = frame_to_wire_rect(frame, clipped, self.format, self.msb_first);
+            let (wire, w, h) = frame_to_wire_rect(frame, clipped, self.msb_first);
             if w == 0 || h == 0 {
                 continue;
             }
@@ -286,12 +279,7 @@ pub(crate) fn intern_atom(conn: &RustConnection, name: &str) -> Result<Atom, Bac
 ///
 /// Returns the wire bytes and the clipped width and height actually drawn;
 /// either is 0 when `rect` does not overlap the frame at all.
-pub fn frame_to_wire_rect(
-    frame: &Frame,
-    rect: Rect,
-    format: PixelFormat,
-    msb_first: bool,
-) -> (Vec<u8>, u32, u32) {
+pub fn frame_to_wire_rect(frame: &Frame, rect: Rect, msb_first: bool) -> (Vec<u8>, u32, u32) {
     let Some(clipped) = rect.intersect(Rect::full(frame)) else {
         return (Vec::new(), 0, 0);
     };
@@ -306,14 +294,10 @@ pub fn frame_to_wire_rect(
             let g = frame.rgba[o + 1];
             let b = frame.rgba[o + 2];
             let a = frame.rgba[o + 3];
-            let alpha = match format {
-                PixelFormat::Argb32 => a,
-                PixelFormat::Bgrx24 => 0,
-            };
             if msb_first {
-                wire.extend_from_slice(&[alpha, r, g, b]);
+                wire.extend_from_slice(&[a, r, g, b]);
             } else {
-                wire.extend_from_slice(&[b, g, r, alpha]);
+                wire.extend_from_slice(&[b, g, r, a]);
             }
         }
     }
@@ -326,7 +310,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_to_wire_rect_converts_2x1_frame_for_both_pixel_formats() {
+    fn frame_to_wire_rect_converts_a_2x1_frame_in_either_byte_order() {
         let frame = Frame {
             width: 2,
             height: 1,
@@ -337,18 +321,18 @@ mod tests {
         };
         let full = Rect::full(&frame);
 
-        // ARGB32, LSB-first server: bytes go B, G, R, A per pixel.
-        let (wire, w, h) = frame_to_wire_rect(&frame, full, PixelFormat::Argb32, false);
+        // LSB-first server: bytes go B, G, R, A per pixel.
+        let (wire, w, h) = frame_to_wire_rect(&frame, full, false);
         assert_eq!((w, h), (2, 1));
         assert_eq!(wire, vec![30, 20, 10, 40, 70, 60, 50, 80]);
 
-        // ARGB32, MSB-first server: bytes go A, R, G, B per pixel.
-        let (wire, _, _) = frame_to_wire_rect(&frame, full, PixelFormat::Argb32, true);
+        // MSB-first server: bytes go A, R, G, B per pixel.
+        let (wire, _, _) = frame_to_wire_rect(&frame, full, true);
         assert_eq!(wire, vec![40, 10, 20, 30, 80, 50, 60, 70]);
 
-        // BGRX24 drops alpha to 0 regardless of byte order.
-        let (wire, _, _) = frame_to_wire_rect(&frame, full, PixelFormat::Bgrx24, false);
-        assert_eq!(wire, vec![30, 20, 10, 0, 70, 60, 50, 0]);
+        // The alpha byte is always the frame's own: the window is depth 32 or
+        // `create` refused it, so there is no format that drops alpha.
+        assert_eq!(wire[0], 40, "pixel 0 keeps its alpha");
     }
 
     #[test]
@@ -374,7 +358,7 @@ mod tests {
         let frame = Frame { width, height, rgba };
 
         let (wire, draw_w, draw_h) =
-            frame_to_wire_rect(&frame, Rect::new(0, 0, 2, 2), PixelFormat::Argb32, true);
+            frame_to_wire_rect(&frame, Rect::new(0, 0, 2, 2), true);
         assert_eq!((draw_w, draw_h), (2, 2));
         assert_eq!(wire.len(), (draw_w * draw_h * 4) as usize);
 
@@ -394,7 +378,7 @@ mod tests {
     #[test]
     fn frame_to_wire_rect_extracts_the_clipped_sub_rectangle() {
         let frame = Frame { width: 3, height: 2, rgba: (0..24).collect() }; // pixel (x,y) starts at (y*3+x)*4
-        let (bytes, w, h) = frame_to_wire_rect(&frame, Rect::new(1, 0, 5, 5), PixelFormat::Argb32, false);
+        let (bytes, w, h) = frame_to_wire_rect(&frame, Rect::new(1, 0, 5, 5), false);
         assert_eq!((w, h), (2, 2));
         assert_eq!(&bytes[0..4], &[6, 5, 4, 7], "pixel (1,0) as BGRA");
         // Row-major, row outer / column inner -- the same order the older
@@ -402,6 +386,6 @@ mod tests {
         // checks: index 2 of a 2-wide output is (row 1, col 0), i.e. pixel
         // (1, 1), not index 3 (which is (row 1, col 1), pixel (2, 1)).
         assert_eq!(&bytes[8..12], &[18, 17, 16, 19], "pixel (1,1)");
-        assert_eq!(frame_to_wire_rect(&frame, Rect::new(10, 10, 1, 1), PixelFormat::Argb32, false).0.len(), 0);
+        assert_eq!(frame_to_wire_rect(&frame, Rect::new(10, 10, 1, 1), false).0.len(), 0);
     }
 }

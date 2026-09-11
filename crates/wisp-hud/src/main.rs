@@ -96,7 +96,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(output)),
         BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(output)),
     };
-    let screen = surface.attach()?;
+    // An `Unsupported` attach is exit 2, not the 1 a `?` would give: the
+    // display server is working, it just cannot host a translucent
+    // screen-sized overlay, and that is the same class of answer as a bad
+    // `--backend` or a bad scale -- something written down has to change.
+    // Every other attach failure is still an error to report and unwind.
+    let screen = match surface.attach() {
+        Ok(size) => size,
+        Err(e @ backend::BackendError::Unsupported(_)) => {
+            eprintln!("wisp-hud: {e}");
+            std::process::exit(2);
+        }
+        Err(e) => return Err(Box::new(e)),
+    };
     let mut canvas = draw::Canvas::new(screen.0, screen.1);
     let fonts = draw::Fonts::embedded();
 

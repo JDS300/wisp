@@ -19,6 +19,13 @@ pub struct Frame {
 pub enum BackendError {
     Unavailable(String),
     Failed(String),
+    /// The display server is there and working, but cannot host the surface
+    /// this HUD is: a translucent, click-through overlay the size of the
+    /// output. Its own exit code (2, like every other "what you asked for
+    /// cannot be done" in `wisp-hud`) rather than the 1 a broken display
+    /// earns, because the fix is a different display server or a different
+    /// backend, not a retry.
+    Unsupported(String),
 }
 
 impl fmt::Display for BackendError {
@@ -26,6 +33,7 @@ impl fmt::Display for BackendError {
         match self {
             BackendError::Unavailable(m) => write!(f, "backend unavailable: {m}"),
             BackendError::Failed(m) => write!(f, "backend failed: {m}"),
+            BackendError::Unsupported(m) => write!(f, "backend unsupported: {m}"),
         }
     }
 }

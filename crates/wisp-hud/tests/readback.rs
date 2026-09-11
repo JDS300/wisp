@@ -10,10 +10,11 @@
 //! for the HUD to draw at least one frame, then connects to the X server
 //! itself and reads the window's own pixels back with `get_image`.
 //!
-//! On a real desktop this opens one small, undecorated, click-through window
-//! for about two seconds and closes it -- the only window this suite is
-//! allowed to open. CI runs it under `xvfb-run` with `WISP_HUD_READBACK=1` set
-//! (see `.github/workflows/ci.yml`).
+//! On a real desktop this opens one undecorated, click-through window the
+//! size of the screen (Task 6 sized the surface to the output) for about two
+//! seconds and closes it -- the only window this suite is allowed to open. CI
+//! runs it under `xvfb-run` with `WISP_HUD_READBACK=1` set (see
+//! `.github/workflows/ci.yml`).
 //!
 //! The check itself is one pixel: (24, 141) in the top-left meter block
 //! (`Layout::default_layout`'s block at offset `[20, 120]`, scale 1.0) --
@@ -23,6 +24,13 @@
 //! else. The test still waits for the stub's fight to be active (its first
 //! 45 s in every 90 s cycle) before reading it, matching the pixel the brief
 //! names, even though this particular one does not move with the fight.
+//!
+//! On an X server that offers no depth-32 visual the HUD refuses to start at
+//! all (`x11_common.rs`: a screen-sized window with no alpha channel is an
+//! opaque screen), so there is no window to read back. That is not a skip --
+//! the test asserts the refusal instead, exit 2 and a line naming the missing
+//! visual -- so this file says something true under either server and CI
+//! cannot go quietly green on a server that cannot run the HUD.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -52,22 +60,38 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
     let _wispd = scratch.spawn(&bin("wispd"), &["--stub"]);
     wait_for_socket(&scratch.socket());
 
-    // [hud] is not yet a section this config parser understands (Spec 5
-    // Task 3 adds that); on this base commit a `[hud]` line has no `=` and is
-    // silently skipped, so the flat `scale = 1.0` right after it is read
-    // exactly as it would be without the header.
+    // `[hud] scale = 1.0` is the layout's own scale (Spec 5 Task 3), which is
+    // what the pixel this test reads back is positioned for.
     scratch.write_config("[hud]\nscale = 1.0\n");
-    let _hud = scratch.spawn(&bin("wisp-hud"), &["--backend", "plain"]);
-
-    // Long enough for the HUD to connect, attach its window, and draw at
-    // least one frame; short enough that a hung child fails this one test
-    // rather than the suite.
-    std::thread::sleep(Duration::from_millis(1500));
+    let mut hud = scratch.spawn(&bin("wisp-hud"), &["--backend", "plain"]);
 
     let (conn, screen_num) = x11rb::connect(None).expect("connect to the X server at $DISPLAY");
     let screen = &conn.setup().roots[screen_num];
     let root = screen.root;
     let root_size = (screen.width_in_pixels as u32, screen.height_in_pixels as u32);
+    let has_depth_32 = screen.allowed_depths.iter().any(|d| d.depth == 32 && !d.visuals.is_empty());
+    // So a CI log says which of the two outcomes this server produced.
+    println!("server root depth {}, depth-32 visual: {has_depth_32}", screen.root_depth);
+
+    if !has_depth_32 {
+        // No alpha channel to be had, so the HUD refuses rather than map an
+        // opaque window the size of the screen. There is no window to read;
+        // what is asserted instead is that the refusal happened, said why,
+        // and exited 2.
+        let (status, stderr) = hud.wait_with_output();
+        assert_eq!(status.code(), Some(2), "stderr: {stderr}");
+        assert!(stderr.contains("32-bit"), "the refusal names the missing visual: {stderr}");
+        assert!(
+            find_hud_window(&conn, root).is_none(),
+            "the HUD refused and still mapped a window"
+        );
+        return;
+    }
+
+    // Long enough for the HUD to connect, attach its window, and draw at
+    // least one frame; short enough that a hung child fails this one test
+    // rather than the suite.
+    std::thread::sleep(Duration::from_millis(1500));
 
     let window = find_hud_window(&conn, root)
         .unwrap_or_else(|| panic!("no window named wisp-hud found under the root window within {TIMEOUT:?}"));
@@ -78,10 +102,7 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
         root_size,
         "the HUD window is sized to the root window"
     );
-    // So a CI log says which of X11Surface's two pixel formats actually ran:
-    // 32 is the depth-32 Argb32 path, anything else (almost always 24) is the
-    // Bgrx24 fallback.
-    println!("window depth: {}", geom.depth);
+    assert_eq!(geom.depth, 32, "the window carries real alpha or the HUD does not start");
 
     let image = conn
         .get_image(ImageFormat::Z_PIXMAP, window, 0, 0, geom.width, geom.height, !0)
@@ -89,10 +110,9 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
         .reply()
         .unwrap();
 
-    // `x11_common.rs::frame_to_wire_rect` writes premultiplied RGB in every
-    // format -- only the alpha byte differs, real for Argb32 and forced to 0
-    // for the Bgrx24 fallback -- and orders the four bytes per the server's
-    // own `image_byte_order`, exactly as read back here.
+    // `x11_common.rs::frame_to_wire_rect` writes premultiplied RGB with the
+    // frame's own alpha, ordered per the server's `image_byte_order`, exactly
+    // as read back here.
     let msb_first = conn.setup().image_byte_order == ImageOrder::MSB_FIRST;
     let stride = image.data.len() / geom.height as usize;
     let offset = 141 * stride + 24 * 4;
@@ -104,24 +124,26 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
     // the same colour with the same tolerance (its 8-bit premultiply/
     // unpremultiply round trip loses at most 1 per channel).
     let close = |got: u8, want: u8| got.abs_diff(want) <= 1;
-    if geom.depth == 32 {
-        // Real alpha: un-premultiply the way `Canvas::pixel` does, to the
-        // straight-alpha colour the theme was written in.
-        let (sr, sg, sb) = if a == 0 {
-            (0, 0, 0)
-        } else {
-            ((r as u32 * 255 / a as u32) as u8, (g as u32 * 255 / a as u32) as u8, (b as u32 * 255 / a as u32) as u8)
-        };
-        assert!(
-            close(sr, 8) && close(sg, 10) && close(sb, 14) && close(a, 189),
-            "straight-alpha [{sr}, {sg}, {sb}, {a}], expected [8, 10, 14, 189] ± 1"
-        );
+    // Real alpha: un-premultiply the way `Canvas::pixel` does, to the
+    // straight-alpha colour the theme was written in.
+    let (sr, sg, sb) = if a == 0 {
+        (0, 0, 0)
     } else {
-        // No real alpha in this format: the RGB bytes are still the panel's
-        // own premultiplied colour, undisguised.
-        assert_eq!(a, 0, "the depth-24 fallback always forces alpha to 0");
-        assert!(close(r, 6) && close(g, 7) && close(b, 10), "premultiplied [{r}, {g}, {b}], expected [6, 7, 10] ± 1");
-    }
+        ((r as u32 * 255 / a as u32) as u8, (g as u32 * 255 / a as u32) as u8, (b as u32 * 255 / a as u32) as u8)
+    };
+    assert!(
+        close(sr, 8) && close(sg, 10) && close(sb, 14) && close(a, 189),
+        "straight-alpha [{sr}, {sg}, {sb}, {a}], expected [8, 10, 14, 189] ± 1"
+    );
+
+    // And a pixel no block covers is transparent, not the window's own
+    // background: with the window the size of the root and `present`
+    // uploading only the dirty rects, an opaque background would black out
+    // the whole screen and every assertion above would still pass.
+    let corner = (geom.height as usize - 1) * stride + (geom.width as usize - 1) * 4;
+    let px = &image.data[corner..corner + 4];
+    let corner_alpha = if msb_first { px[0] } else { px[3] };
+    assert_eq!(corner_alpha, 0, "the bottom-right corner covers no block and must be transparent");
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +247,6 @@ impl Drop for Scratch {
 /// assertion cannot leave a daemon or a window behind for the next run.
 struct Running {
     child: Child,
-    #[allow(dead_code)] // kept so a future assertion can inspect it; not read today.
     stderr: Arc<Mutex<String>>,
 }
 
@@ -247,6 +268,26 @@ impl Running {
             }
         });
         Running { child, stderr }
+    }
+}
+
+impl Running {
+    /// Waits for the child to exit (within [`TIMEOUT`]) and returns its status
+    /// and everything it printed on stderr.
+    fn wait_with_output(&mut self) -> (std::process::ExitStatus, String) {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    // The reader thread may still be draining the pipe.
+                    sleep_ms(100);
+                    return (status, self.stderr.lock().unwrap().clone());
+                }
+                Ok(None) if Instant::now() < deadline => sleep_ms(20),
+                Ok(None) => panic!("the child was still running after {TIMEOUT:?}"),
+                Err(e) => panic!("waiting for the child: {e}"),
+            }
+        }
     }
 }
 
