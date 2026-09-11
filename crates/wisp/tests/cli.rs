@@ -598,7 +598,9 @@ fn doctor_exits_1_and_prints_the_config_path_when_no_log_resolves() {
         stdout.contains(&format!("socket:    {} (nothing listening)", s.socket().display())),
         "{stdout}"
     );
-    assert!(stdout.contains("scale:     48 (default)\n"), "{stdout}");
+    // The HUD's own default (Spec 5 made `scale` a multiplier, not Spec 4's
+    // font pixel size), and the word that says which of the two it is.
+    assert!(stdout.contains("scale:     1 (factor, default)\n"), "{stdout}");
     // Detection ran, so a backend is named with both of its observations; which
     // one it is depends on the machine, and is not this test's business.
     assert!(stdout.contains("backend:   "), "{stdout}");
@@ -702,7 +704,7 @@ fn doctor_exits_0_and_names_the_newest_file_when_logs_dir_is_set() {
         )),
         "{stdout}"
     );
-    assert!(stdout.contains("scale:     32 (--scale flag)"), "{stdout}");
+    assert!(stdout.contains("scale:     32 (factor, --scale flag)"), "{stdout}");
 }
 
 #[test]

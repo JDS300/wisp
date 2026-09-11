@@ -19,7 +19,17 @@ pub const HELP: &str = "HUD mode   ↑↓←→ move   Tab next   [ ] shows   F 
 /// Clears each block's previous rect (passed in `previous`), then draws
 /// every non-hidden block; in HUD mode also outlines, tags, ghosts and the
 /// help strip.
-pub fn paint(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, views: &[BlockView], previous: &[Rect], hud_mode: Option<HudModeView>) {
+///
+/// Returns the rects the caller must pass back as `previous` next frame: not
+/// the block rects, but everything this frame actually touched. HUD mode
+/// draws well outside every block -- the outline 3 px out, the selected
+/// block's halo 4 px out, the name tag entirely above, the help strip along
+/// the bottom of the screen -- and none of that was in the erase set, so
+/// nudging a block left the old ring and tag behind as smear, leaving HUD
+/// mode left all of it on screen, and redrawing the 55 %-alpha outline over
+/// pixels that were never cleared accumulated alpha until it was opaque.
+#[must_use = "the returned rects are next frame's erase set; dropping them is the smear bug"]
+pub fn paint(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, views: &[BlockView], previous: &[Rect], hud_mode: Option<HudModeView>) -> Vec<Rect> {
     for r in previous {
         canvas.clear(*r);
     }
@@ -34,15 +44,27 @@ pub fn paint(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, views: &[BlockVi
         draw_panel(canvas, fonts, theme, view);
     }
 
-    if let Some(hud) = &hud_mode {
-        for view in views {
-            if view.hidden {
-                continue;
+    let mut erase: Vec<Rect> = Vec::with_capacity(views.len() + 1);
+    match &hud_mode {
+        Some(hud) => {
+            for view in views {
+                // A hidden block's ghost is drawn inside its own rect and
+                // carries no chrome, so the rect is the whole of it.
+                if view.hidden {
+                    erase.push(view.rect);
+                    continue;
+                }
+                let chrome = draw_hud_outline(canvas, fonts, theme, view, view.index == hud.selected);
+                erase.push(view.rect.union(chrome));
             }
-            draw_hud_outline(canvas, fonts, theme, view, view.index == hud.selected);
+            erase.push(draw_help(canvas, fonts, theme, hud.help));
         }
-        draw_help(canvas, fonts, theme, hud.help);
+        // Outside HUD mode a hidden block draws nothing, so there is nothing
+        // of its own to clear next frame; whatever it left behind is cleared
+        // by *this* frame, out of the rects the last one returned.
+        None => erase.extend(views.iter().filter(|view| !view.hidden).map(|view| view.rect)),
     }
+    erase
 }
 
 fn style(face: Face, size: f32, colour: crate::draw::Rgba) -> TextStyle {
@@ -208,7 +230,13 @@ fn draw_ghost(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockVie
     canvas.text(fonts, x, baseline, &label, s);
 }
 
-fn draw_hud_outline(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockView, selected: bool) {
+/// Draws one block's HUD-mode chrome and returns the region it covers.
+///
+/// The returned rect is the same whether or not this block is selected: Tab
+/// moves the selection between frames, and the next frame clears using what
+/// *this* one returned, so a rect that shrank when a block was deselected
+/// would leave the halo of the frame before it on screen.
+fn draw_hud_outline(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockView, selected: bool) -> Rect {
     let rect = view.rect;
     let outer = rect.inset(-(theme.outline_offset as i32));
     if selected {
@@ -227,9 +255,17 @@ fn draw_hud_outline(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &Bl
     let tag_rect = Rect::new(outer.x, outer.y - tag_h as i32, tag_w, tag_h);
     canvas.fill_rect(tag_rect, theme.tag_bg, 0);
     canvas.text(fonts, tag_rect.x + theme.pad_x as i32, tag_rect.y + theme.header_pad_y as i32 + ascent as i32, &tag, s);
+
+    // The outline sits `outline_offset` outside the block and the halo
+    // `nudge` outside it, so the wider of the two bounds the ring; the tag
+    // hangs above that.
+    let ring = rect.inset(-(theme.outline_offset.max(theme.nudge.max(0) as u32) as i32));
+    ring.union(tag_rect)
 }
 
-fn draw_help(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, help: &str) {
+/// Draws the bottom-of-screen help strip and returns its rect, which is
+/// nowhere near any block and so has to be erased on its own account.
+fn draw_help(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, help: &str) -> Rect {
     let (w, h) = canvas.size();
     let s = style(Face::Sans, theme.text_px, theme.text);
     let text_w = measure(fonts, help, s);
@@ -240,6 +276,7 @@ fn draw_help(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, help: &str) {
     canvas.stroke_rect(rect, theme.outline, theme.border, None);
     let baseline = centered_baseline(fonts, Face::Sans, theme.text_px, rect.y, rect.h);
     canvas.text(fonts, rect.x + theme.pad_x as i32, baseline, help, s);
+    rect
 }
 
 #[cfg(test)]
@@ -286,7 +323,7 @@ mod tests {
         let view = damage_view(rect);
         let mut canvas = Canvas::new(400, 400);
 
-        paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&view), &[], None);
+        let _ = paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&view), &[], None);
 
         // Inside the panel, below the header and past the row: plain panel
         // colour blended over transparent. The canvas's 8-bit premultiplied
@@ -305,6 +342,76 @@ mod tests {
         assert_ne!(bar_p, p);
     }
 
+    /// Every pixel on `canvas` with any alpha at all.
+    fn inked(canvas: &Canvas, w: u32, h: u32) -> Vec<(i32, i32)> {
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| canvas.pixel(x, y)[3] > 0)
+            .map(|(x, y)| (x as i32, y as i32))
+            .collect()
+    }
+
+    #[test]
+    fn hud_mode_chrome_is_in_the_erase_set_and_leaves_nothing_behind() {
+        // HUD mode draws well outside every block -- the dashed outline 3 px
+        // out, the selected block's halo 4 px out, the name tag entirely
+        // above it, the help strip along the bottom of the screen -- and none
+        // of that used to be handed back for the next frame's clear. Nudging
+        // left the old ring and tag as smear, exiting HUD mode left all of it
+        // on screen, and redrawing a 55 %-alpha stroke onto pixels that were
+        // never cleared blended towards opaque within a couple of seconds.
+        let theme = Theme::at(1.0);
+        let fonts = Fonts::embedded();
+        let (w, h) = (400u32, 400u32);
+        let rect = Rect::new(60, 120, 200, 80);
+        let view = damage_view(rect);
+        let mut canvas = Canvas::new(w, h);
+
+        let erase = paint(
+            &mut canvas,
+            &fonts,
+            &theme,
+            std::slice::from_ref(&view),
+            &[],
+            Some(HudModeView { selected: 0, help: HELP }),
+        );
+
+        // Not a vacuous pass: the three pieces of chrome outside the block
+        // are on the canvas, and each is inside some erase rect.
+        let ring_x = rect.x - theme.nudge;
+        let tag_y = rect.y - theme.outline_offset as i32 - 1;
+        let strip_y = h as i32 - 1;
+        for (x, y, what) in [
+            (ring_x, rect.y + rect.h as i32 / 2, "the halo, 4 px outside the block"),
+            (rect.x - theme.outline_offset as i32 + 1, tag_y, "the name tag, above the block"),
+            (w as i32 / 2, strip_y, "the help strip, along the bottom of the screen"),
+        ] {
+            assert!(canvas.pixel(x as u32, y as u32)[3] > 0, "{what} was not drawn at ({x}, {y})");
+            assert!(!rect.contains(x, y), "{what} is meant to be outside the block");
+            assert!(erase.iter().any(|r| r.contains(x, y)), "{what} at ({x}, {y}) is not in {erase:?}");
+        }
+
+        // And nothing at all was drawn outside the erase set.
+        for (x, y) in inked(&canvas, w, h) {
+            assert!(erase.iter().any(|r| r.contains(x, y)), "({x}, {y}) was painted but is never cleared");
+        }
+
+        // Next frame, HUD mode off: the chrome's own pixels come back
+        // transparent, and only the block itself is left.
+        let erase = paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&view), &erase, None);
+        for (x, y, what) in [
+            (ring_x, rect.y + rect.h as i32 / 2, "the halo"),
+            (rect.x - theme.outline_offset as i32 + 1, tag_y, "the name tag"),
+            (w as i32 / 2, strip_y, "the help strip"),
+        ] {
+            assert_eq!(canvas.pixel(x as u32, y as u32), [0, 0, 0, 0], "{what} is still on screen at ({x}, {y})");
+        }
+        for (x, y) in inked(&canvas, w, h) {
+            assert!(rect.contains(x, y), "({x}, {y}) is outside the block and still painted");
+        }
+        assert_eq!(erase, vec![rect], "outside HUD mode the block's own rect is the whole erase set");
+    }
+
     #[test]
     fn a_hidden_block_paints_only_in_hud_mode() {
         let theme = Theme::at(1.0);
@@ -320,11 +427,11 @@ mod tests {
         };
 
         let mut canvas = Canvas::new(400, 400);
-        paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&hidden), &[], None);
+        let _ = paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&hidden), &[], None);
         assert!(!painted_inside(&canvas), "a hidden block draws nothing outside HUD mode");
 
         let mut canvas = Canvas::new(400, 400);
-        paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&hidden), &[], Some(HudModeView { selected: 99, help: HELP }));
+        let _ = paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&hidden), &[], Some(HudModeView { selected: 99, help: HELP }));
         assert!(painted_inside(&canvas), "a hidden block draws its ghost in HUD mode");
     }
 }

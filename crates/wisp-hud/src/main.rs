@@ -82,16 +82,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut layout = config.layout().clone();
     let theme = Theme::at(scale);
 
-    // Every backend now sizes its own surface to the output; none of them
-    // take a width or height any more (Task 6). Wiring `--output` through to
-    // here is not this task's business, so every backend is asked for the
-    // compositor's own choice of output.
+    // Every backend sizes its own surface to the output; none of them take a
+    // width or height (Task 6). `hud.output` names which output that is:
+    // layer-shell resolves the name against the live output list and says
+    // what it saw on a miss, and the two X11 backends ignore it (an X screen
+    // is not a Wayland output). `None` -- what the config does not say -- is
+    // the compositor's own choice, as before.
+    let output = layout.hud.output.as_deref();
     let mut surface: Box<dyn OverlayBackend> = match kind {
         BackendKind::GamescopeX11 => {
-            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(None))
+            Box::new(backend::gamescope_x11::GamescopeX11Backend::new(output))
         }
-        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(None)),
-        BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(None)),
+        BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(output)),
+        BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(output)),
     };
     let screen = surface.attach()?;
     let mut canvas = draw::Canvas::new(screen.0, screen.1);
@@ -211,13 +214,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let views = model::build(&last_snapshot, &layout, &theme, &session, screen);
             let hud_mode_view =
                 if hud_mode.active { Some(HudModeView { selected: hud_mode.selected, help: paint::HELP }) } else { None };
-            paint::paint(&mut canvas, &fonts, &theme, &views, &previous_rects, hud_mode_view);
-
-            previous_rects = if hud_mode.active {
-                views.iter().map(|v| v.rect).collect()
-            } else {
-                views.iter().filter(|v| !v.hidden).map(|v| v.rect).collect()
-            };
+            // `paint` hands back what it actually touched, which in HUD mode
+            // is more than the block rects: the outline and halo are drawn
+            // outside every block, the name tag above it, the help strip
+            // along the bottom of the screen. Computing the erase set here
+            // from the rects alone is what left all of that smeared on
+            // screen and blending towards opaque.
+            let last = std::mem::take(&mut previous_rects);
+            previous_rects = paint::paint(&mut canvas, &fonts, &theme, &views, &last, hud_mode_view);
 
             let dirty = canvas.take_dirty();
             if let Err(e) = surface.present(canvas.frame(), &dirty) {

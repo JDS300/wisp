@@ -19,10 +19,17 @@ use wisp_probe::{detect, BackendKind, Detection};
 use crate::args::DoctorArgs;
 use crate::labelled;
 
-/// The scale the HUD renders at when neither the flag nor the config file says.
-/// Printed by `Display`, so it reads as the `48` of the report and is the same
-/// value as the HUD's `48.0`.
-const DEFAULT_SCALE: f32 = 48.0;
+/// The scale the HUD renders at when neither the flag nor the config file
+/// says: the same value as `wisp-hud`'s own `DEFAULT_SCALE`, which Spec 5
+/// changed from Spec 4's font pixel size (48) to a multiplier. Doctor is the
+/// diagnostic users are told to run first, so a number here that the HUD does
+/// not actually use costs more than its size suggests.
+const DEFAULT_SCALE: f32 = 1.0;
+
+/// What the `scale:` line's number is: a multiplier on every size in the
+/// theme, not the pixel size of a font. Spec 4's `scale` was the latter, and
+/// the two read identically on a line that does not say which.
+const SCALE_UNIT: &str = "factor";
 
 /// Print the report and return the status `main` exits with: 1 when no log
 /// resolves, 0 otherwise.
@@ -209,7 +216,7 @@ fn spells_origin(
 /// settings and not the other would be half a diagnostic.
 fn scale_line(flag: Option<&str>, config: &Config) -> String {
     let Some((text, origin)) = resolve(flag, config.get(Key::Scale)) else {
-        return labelled("scale:", &format!("{DEFAULT_SCALE} (default)"));
+        return labelled("scale:", &format!("{DEFAULT_SCALE} ({SCALE_UNIT}, default)"));
     };
     // Printed as the user wrote it: this is a report, and a value the HUD will
     // refuse has to be recognisable as the thing they typed.
@@ -217,7 +224,7 @@ fn scale_line(flag: Option<&str>, config: &Config) -> String {
         Ok(_) => origin.label("scale"),
         Err(_) => format!("{}, which wisp-hud refuses at start", origin.label("scale")),
     };
-    labelled("scale:", &format!("{text} ({state})"))
+    labelled("scale:", &format!("{text} ({SCALE_UNIT}, {state})"))
 }
 
 /// The `backend:` line — the backend the HUD will actually use, which is its
@@ -527,24 +534,27 @@ mod tests {
 
     #[test]
     fn doctor_reports_the_effective_scale_and_its_origin() {
-        assert_eq!(scale_line(None, &Config::parse("# nothing in here\n")), "scale:     48 (default)");
+        // The HUD's own default, and the word that says what the number is:
+        // Spec 4's `scale` was a font pixel size and Spec 5's is a
+        // multiplier, and 48 stayed here long after the HUD moved to 1.
+        assert_eq!(scale_line(None, &Config::parse("# nothing in here\n")), "scale:     1 (factor, default)");
         // `[hud] scale` (Spec 5's own key) is the multiplier as written, with
         // no Spec-4-pixel conversion — a bare top-level `scale` would be read
         // as that legacy pixel value and converted (see `wisp_config::config`'s
         // own tests), which is not what this test is about.
         assert_eq!(
             scale_line(None, &Config::parse("[hud]\nscale = 32\n")),
-            "scale:     32 (config scale)"
+            "scale:     32 (factor, config scale)"
         );
         assert_eq!(
             scale_line(Some("16"), &Config::parse("[hud]\nscale = 32\n")),
-            "scale:     16 (--scale flag)"
+            "scale:     16 (factor, --scale flag)"
         );
         // A value the HUD would refuse is printed as the user wrote it rather
         // than dressed up as the default: doctor reports, it does not repair.
         assert_eq!(
             scale_line(None, &Config::parse("scale = not-a-number\n")),
-            "scale:     not-a-number (config scale, which wisp-hud refuses at start)"
+            "scale:     not-a-number (factor, config scale, which wisp-hud refuses at start)"
         );
     }
 }
