@@ -15,10 +15,14 @@
 //! allowed to open. CI runs it under `xvfb-run` with `WISP_HUD_READBACK=1` set
 //! (see `.github/workflows/ci.yml`).
 //!
-//! Until Task 7 replaces the renderer, the old HUD still draws a small frame
-//! at (0, 0) of the now-output-sized window, so this only checks that some
-//! pixel came out non-transparent -- Task 7 tightens it to the panel colour
-//! at a specific pixel.
+//! The check itself is one pixel: (24, 141) in the top-left meter block
+//! (`Layout::default_layout`'s block at offset `[20, 120]`, scale 1.0) --
+//! past the panel's 1 px border, past the header strip's own 20 px band (its
+//! left padding puts any text at x >= 28, well clear of x = 24), and above
+//! the first row -- so it is `theme.panel` over transparent and nothing
+//! else. The test still waits for the stub's fight to be active (its first
+//! 45 s in every 90 s cycle) before reading it, matching the pixel the brief
+//! names, even though this particular one does not move with the fight.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -28,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Atom, ConnectionExt, ImageFormat, Window};
+use x11rb::protocol::xproto::{Atom, ConnectionExt, ImageFormat, ImageOrder, Window};
 use x11rb::rust_connection::RustConnection;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -85,17 +89,39 @@ fn plain_window_backend_paints_a_window_a_real_x_server_can_read_back() {
         .reply()
         .unwrap();
 
-    // Checked per-channel, not per-alpha: X11Surface's depth-24 BGRX
-    // fallback (x11_common.rs, PixelFormat::Bgrx24) always writes alpha 0,
-    // so an alpha-only check would fail every run under a server that offers
-    // no depth-32 visual (Xvfb on ubuntu-latest, for one) even though the HUD
-    // painted real (opaque, non-black) pixels. Any non-zero byte in a pixel
-    // -- R, G, B or A, in whichever order the server's byte order puts them
-    // -- is enough: under Argb32 a painted pixel has non-zero RGB and alpha;
-    // under Bgrx24 the window's own background is black with alpha forced to
-    // 0, so the old renderer's white text still shows up as non-zero RGB.
-    let any_painted = image.data.chunks_exact(4).any(|px| px.iter().any(|&byte| byte != 0));
-    assert!(any_painted, "expected at least one painted (non-zero-channel) pixel in the HUD window");
+    // `x11_common.rs::frame_to_wire_rect` writes premultiplied RGB in every
+    // format -- only the alpha byte differs, real for Argb32 and forced to 0
+    // for the Bgrx24 fallback -- and orders the four bytes per the server's
+    // own `image_byte_order`, exactly as read back here.
+    let msb_first = conn.setup().image_byte_order == ImageOrder::MSB_FIRST;
+    let stride = image.data.len() / geom.height as usize;
+    let offset = 141 * stride + 24 * 4;
+    let px = &image.data[offset..offset + 4];
+    let (r, g, b, a) = if msb_first { (px[1], px[2], px[3], px[0]) } else { (px[2], px[1], px[0], px[3]) };
+
+    // `theme.panel` (`rgba(0x080a0e, 0.74)`) over transparent, as
+    // `paint.rs`'s own `paints_the_panel_and_the_top_rows_bar` test checks
+    // the same colour with the same tolerance (its 8-bit premultiply/
+    // unpremultiply round trip loses at most 1 per channel).
+    let close = |got: u8, want: u8| got.abs_diff(want) <= 1;
+    if geom.depth == 32 {
+        // Real alpha: un-premultiply the way `Canvas::pixel` does, to the
+        // straight-alpha colour the theme was written in.
+        let (sr, sg, sb) = if a == 0 {
+            (0, 0, 0)
+        } else {
+            ((r as u32 * 255 / a as u32) as u8, (g as u32 * 255 / a as u32) as u8, (b as u32 * 255 / a as u32) as u8)
+        };
+        assert!(
+            close(sr, 8) && close(sg, 10) && close(sb, 14) && close(a, 189),
+            "straight-alpha [{sr}, {sg}, {sb}, {a}], expected [8, 10, 14, 189] ± 1"
+        );
+    } else {
+        // No real alpha in this format: the RGB bytes are still the panel's
+        // own premultiplied colour, undisguised.
+        assert_eq!(a, 0, "the depth-24 fallback always forces alpha to 0");
+        assert!(close(r, 6) && close(g, 7) && close(b, 10), "premultiplied [{r}, {g}, {b}], expected [6, 7, 10] ± 1");
+    }
 }
 
 // ---------------------------------------------------------------------------

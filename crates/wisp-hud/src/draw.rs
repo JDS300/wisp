@@ -47,6 +47,11 @@ fn alpha_byte(alpha: f32) -> u8 {
 pub enum Face {
     Sans,
     SansBold,
+    // Not drawn anywhere by `paint.rs` today -- every row in Spec 5's
+    // console is proportional or tabular-digit, never fixed-width prose --
+    // but the embedded face is still loaded and measured by this crate's own
+    // tests, so it stays part of `Fonts`'s public surface.
+    #[allow(dead_code)]
     Mono,
 }
 
@@ -344,7 +349,10 @@ impl Canvas {
     }
 
     /// Straight-alpha readback of one pixel (un-premultiplied; alpha 0
-    /// reads as `[0, 0, 0, 0]`).
+    /// reads as `[0, 0, 0, 0]`). Only this crate's own tests read a `Canvas`
+    /// back this way -- the real path out is `frame()`, uploaded by a
+    /// backend and read back over X in `tests/readback.rs`.
+    #[allow(dead_code)]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         let p = self.get_pixel(x, y);
         let a = p[3];

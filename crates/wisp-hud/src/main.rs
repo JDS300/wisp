@@ -1,21 +1,48 @@
 // SPDX-License-Identifier: MIT
 // crates/wisp-hud/src/main.rs
 mod backend;
-#[allow(dead_code)] // Task 7 rewires the HUD onto this module; text.rs still draws it today.
 mod draw;
-mod text;
-#[allow(dead_code)] // Task 7 wires the HUD onto these modules; nothing calls into them yet.
-mod theme;
-#[allow(dead_code)]
+mod hud_mode;
+mod keys;
 mod model;
-#[allow(dead_code)]
 mod paint;
+mod reload;
+mod theme;
 
-use backend::{OverlayBackend, Rect};
+use backend::OverlayBackend;
+use hud_mode::{Action, HudMode};
+use keys::{Chord, Edges, Key, Keyboard};
+use paint::HudModeView;
+use reload::ConfigWatch;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use wisp_config::config::{Config, Key};
+use std::time::{Duration, Instant};
+use theme::Theme;
+use wisp_config::config::{Config, Key as ConfigKey};
+use wisp_config::write::write_atomic;
 use wisp_probe::BackendKind;
+use wisp_proto::client::StreamEnd;
+use wisp_proto::{Snapshot, PROTOCOL_VERSION};
+
+/// A snapshot as `model::build` sees the world before the daemon has sent one
+/// yet: no kills, no timers, no fight. HUD mode can toggle before the first
+/// real snapshot arrives, and the layout still has to paint something.
+fn empty_snapshot() -> Snapshot {
+    Snapshot { v: PROTOCOL_VERSION, seq: 0, ts: String::new(), lines_ingested: 0, session_kills: 0, timers: Vec::new(), encounter: None }
+}
+
+/// HUD mode's arrow step, unscaled -- the theme's `nudge`/`shift_nudge` are
+/// already multiplied by the render scale, which is the wrong number here:
+/// moving a block by scaled pixels at scale 2.0 would jump twice as far per
+/// key press as at scale 1.0, when the point of the step is to feel the same
+/// regardless of how big everything is drawn.
+const NUDGE: i32 = 4;
+const SHIFT_NUDGE: i32 = 24;
+
+/// How long `next_snapshot_within` may block before the loop comes back
+/// around to poll keys and the config watch. Small enough that holding an
+/// arrow key still feels immediate, large enough not to spin.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // args_os, not args: OsStr-clean throughout, no String round-trip. Only
@@ -25,25 +52,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend_flag = or_refuse(flag_value(&args, "backend"));
     let scale_flag = or_refuse(flag_value(&args, "scale"));
 
+    // The config path is resolved once, here, so the HUD's own save (HUD
+    // mode's Esc/chord) writes to the same file it read -- `startup_config`
+    // does its own lookup and does not hand the path back.
+    let config_path = wisp_config::paths::config_path().ok();
+
     // The config is read once, and everything it has to say about itself is
     // said once here, before any value from it is acted on.
-    let (config, warnings) = startup_config();
+    let (mut config, warnings) = startup_config();
     for warning in &warnings {
         eprintln!("{warning}");
     }
+    print_layout_notices(&config);
 
     // DEFAULT_SCALE is the default only when neither the flag nor the file
     // says otherwise. A present-but-bad value is refused with a clear error and
     // exit 2, not silently swapped for the default -- and the message names
     // whichever of the two it came from.
-    let scale = or_refuse(scale_of(resolve(scale_flag.as_deref(), config.get(Key::Scale))));
+    let scale = or_refuse(scale_of(resolve(scale_flag.as_deref(), config.get(ConfigKey::Scale))));
 
     // Neither the flag nor the file said, so detection decides, as before.
-    let kind = or_refuse(backend_of(resolve(backend_flag.as_deref(), config.get(Key::Backend))))
+    let kind = or_refuse(backend_of(resolve(backend_flag.as_deref(), config.get(ConfigKey::Backend))))
         .unwrap_or_else(|| wisp_probe::detect().kind);
-    eprintln!("wisp-hud: backend {kind:?}, scale {scale}px");
+    eprintln!("wisp-hud: backend {kind:?}, scale {scale:.2}");
 
-    let renderer = text::Renderer::new(scale);
+    let mut layout = config.layout().clone();
+    let theme = Theme::at(scale);
 
     // Every backend now sizes its own surface to the output; none of them
     // take a width or height any more (Task 6). Wiring `--output` through to
@@ -56,42 +90,126 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::WlrLayerShell => Box::new(backend::layer_shell::LayerShellBackend::new(None)),
         BackendKind::PlainWindow => Box::new(backend::plain_window::PlainWindowBackend::new(None)),
     };
-    surface.attach()?;
+    let screen = surface.attach()?;
+    let mut canvas = draw::Canvas::new(screen.0, screen.1);
+    let fonts = draw::Fonts::embedded();
+
+    let chord = or_refuse(chord_of(&layout.hud.chord));
+    let mut keyboard = Keyboard::open(&chord);
+    if keyboard.is_none() {
+        eprintln!("wisp-hud: no X display to poll; HUD mode unavailable (use wisp hud or edit the config)");
+    }
+    let mut edges = Edges::new(Duration::from_millis(400), Duration::from_millis(100));
+    let mut hud_mode = HudMode::default();
+    let mut watch = config_path.clone().map(ConfigWatch::new);
 
     let path = wisp_config::paths::socket_path();
     let mut stream = wisp_proto::client::connect(&path)?;
     eprintln!("wisp-hud: connected to {}", path.display());
 
-    while let Some(item) = stream.next_snapshot() {
-        match item {
-            Ok(snap) => {
-                let frame = renderer.render_lines(&hud_lines(&snap));
-                // Until Task 7 replaces the renderer, `frame` is still much
-                // smaller than the now-output-sized window; the single dirty
-                // rect covering it lands the old HUD at (0, 0) exactly as it
-                // always drew.
-                if let Err(e) = surface.present(&frame, &[Rect::full(&frame)]) {
-                    eprintln!("wisp-hud: {e}");
-                    std::process::exit(1);
-                }
+    let mut session = model::Session::default();
+    let mut last_snapshot = empty_snapshot();
+    let mut previous_rects: Vec<backend::Rect> = Vec::new();
+
+    loop {
+        let mut redraw = false;
+
+        match stream.next_snapshot_within(POLL_INTERVAL) {
+            Ok(Some(snap)) => {
+                session.observe(snap.encounter.as_ref());
+                last_snapshot = snap;
+                redraw = true;
+            }
+            Ok(None) => {}
+            Err(StreamEnd::Closed) => {
+                eprintln!("wisp-hud: daemon closed the connection");
+                return Ok(());
             }
             Err(e) => {
                 eprintln!("wisp-hud: {e}");
                 std::process::exit(1);
             }
         }
+
+        let now = Instant::now();
+
+        if let Some(watch) = &mut watch {
+            match watch.poll(now) {
+                Some(Ok(cfg)) => {
+                    print_layout_notices(&cfg);
+                    if !hud_mode.active {
+                        layout = cfg.layout().clone();
+                        config = cfg;
+                        redraw = true;
+                    } else {
+                        // A reload during placement would fight the keys, so
+                        // the live `layout` HUD mode is editing is left
+                        // alone. It is not queued to apply once HUD mode
+                        // exits either: exiting always saves (`Chord` and
+                        // `Escape` both end in `SaveAndExit`), which writes
+                        // the in-progress edit and calls `mark_saved` --
+                        // replaying this now-stale `cfg` afterwards would
+                        // silently revert what the user just placed. The
+                        // notice above is still worth printing, though: it
+                        // says once that an edit landed, even though this
+                        // particular one did not take.
+                    }
+                }
+                Some(Err(e)) => eprintln!("wisp-hud: config reload failed: {e}"),
+                None => {}
+            }
+        }
+
+        if let Some(kb) = &mut keyboard {
+            let down = kb.poll()?;
+            let shift_held = down.contains(&Key::Shift);
+            for key in edges.update(now, &down) {
+                match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
+                    Action::Nothing => {}
+                    Action::Redraw => redraw = true,
+                    Action::SaveAndExit => {
+                        redraw = true;
+                        config.layout_mut().clone_from(&layout);
+                        match &config_path {
+                            Some(path) => match write_atomic(path, &config.to_toml()) {
+                                Ok(()) => {
+                                    if let Some(watch) = &mut watch {
+                                        watch.mark_saved();
+                                    }
+                                }
+                                Err(e) => eprintln!("wisp-hud: failed to save config: {e}"),
+                            },
+                            None => eprintln!("wisp-hud: failed to save config: no config path"),
+                        }
+                    }
+                }
+            }
+        }
+
+        if redraw {
+            let views = model::build(&last_snapshot, &layout, &theme, &session, screen);
+            let hud_mode_view =
+                if hud_mode.active { Some(HudModeView { selected: hud_mode.selected, help: paint::HELP }) } else { None };
+            paint::paint(&mut canvas, &fonts, &theme, &views, &previous_rects, hud_mode_view);
+
+            previous_rects = if hud_mode.active {
+                views.iter().map(|v| v.rect).collect()
+            } else {
+                views.iter().filter(|v| !v.hidden).map(|v| v.rect).collect()
+            };
+
+            let dirty = canvas.take_dirty();
+            if let Err(e) = surface.present(canvas.frame(), &dirty) {
+                eprintln!("wisp-hud: {e}");
+                std::process::exit(1);
+            }
+        }
     }
-    // next_snapshot already logged a read error, if that's why the loop
-    // ended; only print "closed the connection" for the other case, a clean
-    // EOF, so a read failure is not followed by a second, misleading line.
-    if !stream.had_error() {
-        eprintln!("wisp-hud: daemon closed the connection");
-    }
-    Ok(())
 }
 
 /// The scale to render at when neither the flag nor the config file says.
-const DEFAULT_SCALE: f32 = 48.0;
+/// A multiplier, not a pixel size (Spec 5): 1.0 is the console's own scale.
+const DEFAULT_SCALE: f32 = 1.0;
 
 /// Where a startup value was written down, so a bad one can be blamed
 /// correctly: a mistyped flag and a typo in the config file are fixed in
@@ -213,6 +331,26 @@ fn backend_of(resolved: Option<(String, Origin)>) -> Result<Option<BackendKind>,
     }
 }
 
+/// The chord, or the refusal it earns. Always blamed on the config file --
+/// `hud.chord` has no flag of its own -- so the origin is fixed rather than
+/// threaded through like `scale`'s and `backend`'s.
+fn chord_of(text: &str) -> Result<Chord, Refusal> {
+    keys::parse_chord(text).map_err(|err| refusal(Origin::Config, "hud.chord", &err))
+}
+
+/// The lines Wisp says once about a config's layout: a legacy pixel scale
+/// converted to the multiplier, and a layout that failed to parse and fell
+/// back to the default. Shared between startup and every reload, since both
+/// have the same thing to say about whatever `Config` they just got.
+fn print_layout_notices(config: &Config) {
+    if let Some((px, f)) = config.converted_scale() {
+        eprintln!("wisp-hud: config scale {px} px is now hud.scale {f:.2}");
+    }
+    if let Some(e) = config.layout_error() {
+        eprintln!("wisp-hud: config layout ignored: {e}");
+    }
+}
+
 /// The config at `path`, and the lines to say once about it. A key Wisp does
 /// not have is reported and skipped; a file that cannot be read at all -- not
 /// valid UTF-8, or no permission to open it -- is reported and treated as empty.
@@ -246,242 +384,9 @@ fn startup_config() -> (Config, Vec<String>) {
     }
 }
 
-use wisp_proto::{Confidence, Encounter, MeterRow, Snapshot, Timer, MAX_DAMAGE_ROWS, MAX_HEALING_ROWS};
-
-/// Wisp's own presentation thresholds. Not derived from anything.
-const WARNING_SECS: i64 = 10;
-const CRITICAL_SECS: i64 = 5;
-const MAX_ROWS: usize = 8;
-const TARGET_COLS: usize = 20;
-const SPELL_COLS: usize = 18;
-const NAME_COLS: usize = 14;
-const EMPTY_PERSONAL: &str = "DPS     -  in    -/s  HPS    -   -:--";
-
-const WHITE: [u8; 3] = [255, 255, 255];
-const DIM: [u8; 3] = [170, 170, 170];
-const WARNING: [u8; 3] = [255, 200, 0];
-const CRITICAL: [u8; 3] = [255, 70, 70];
-
-fn roman(rank: u8) -> &'static str {
-    ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
-        .get(rank as usize)
-        .copied()
-        .unwrap_or("")
-}
-
-/// Truncate to `cols` characters, padding on the right so columns line up
-/// in the monospace face.
-fn fit(s: &str, cols: usize) -> String {
-    let mut out: String = s.chars().take(cols).collect();
-    while out.chars().count() < cols {
-        out.push(' ');
-    }
-    out
-}
-
-fn format_row(target: &str, spell: &str, secs: i64) -> String {
-    format!("{} {} {:>4}", fit(target, TARGET_COLS), fit(spell, SPELL_COLS), secs)
-}
-
-fn row_colour(t: &Timer) -> [u8; 3] {
-    let secs = t.remaining_ms.div_euclid(1000);
-    if secs <= CRITICAL_SECS {
-        CRITICAL
-    } else if secs <= WARNING_SECS {
-        WARNING
-    } else if t.confidence == Confidence::Estimated {
-        DIM
-    } else {
-        WHITE
-    }
-}
-
-/// 999 -> "999", 18234 -> "18.2k", 1320500 -> "1.32M". Fits the 7-column amount slot.
-fn compact(n: u64) -> String {
-    if n < 10_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        format!("{:.2}M", n as f64 / 1_000_000.0)
-    }
-}
-
-fn personal_line(e: &Encounter) -> String {
-    format!(
-        "DPS {:>5}  in {:>4}/s  HPS {:>4}   {}:{:02}",
-        e.you.dps, e.you.taken_ps, e.you.hps, e.duration_s / 60, e.duration_s % 60
-    )
-}
-
-fn meter_line(r: &MeterRow, heal: bool) -> text::Line {
-    let text = format!("{} {:>7} {:>5}/s{}", fit(&r.name, NAME_COLS), compact(r.amount), r.per_s, if heal { "  +" } else { "" });
-    text::Line { text, rgb: WHITE }
-}
-
-/// Kill count, personal line, timer rows, damage rows, healing rows.
-fn hud_lines(snap: &Snapshot) -> Vec<text::Line> {
-    let mut lines = vec![text::Line { text: format!("{} kills", snap.session_kills), rgb: WHITE }];
-    match &snap.encounter {
-        Some(e) => lines.push(text::Line { text: personal_line(e), rgb: if e.active { WHITE } else { DIM } }),
-        None => lines.push(text::Line { text: EMPTY_PERSONAL.to_string(), rgb: DIM }),
-    }
-    for t in snap.timers.iter().take(MAX_ROWS) {
-        let spell = if t.rank == 0 { t.spell.clone() } else { format!("{} {}", t.spell, roman(t.rank)) };
-        // Clamped to what the `{:>4}` column (and the startup probe's width)
-        // can hold: a freshly seeded timer for one of the longer-capped
-        // spells can seed above 9999 s.
-        let secs = t.remaining_ms.div_euclid(1000).clamp(0, 9999);
-        lines.push(text::Line { text: format_row(&t.target, &spell, secs), rgb: row_colour(t) });
-    }
-    if let Some(e) = &snap.encounter {
-        lines.extend(e.damage.iter().take(MAX_DAMAGE_ROWS).map(|r| meter_line(r, false)));
-        lines.extend(e.healing.iter().take(MAX_HEALING_ROWS).map(|r| meter_line(r, true)));
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_proto::TimerKind;
-
-    fn timer(remaining_ms: i64, confidence: Confidence) -> Timer {
-        Timer {
-            target: "a jeering gargoyle".to_string(),
-            spell: "Mesmerization".to_string(),
-            rank: 6,
-            kind: TimerKind::Mez,
-            damage_type: None,
-            remaining_ms,
-            duration_ms: 38_000,
-            confidence,
-        }
-    }
-
-    #[test]
-    fn colour_follows_the_thresholds_and_confidence() {
-        assert_eq!(row_colour(&timer(30_000, Confidence::Measured)), WHITE);
-        assert_eq!(row_colour(&timer(30_000, Confidence::Estimated)), DIM);
-        assert_eq!(row_colour(&timer(10_000, Confidence::Measured)), WARNING);
-        assert_eq!(row_colour(&timer(5_999, Confidence::Measured)), CRITICAL);
-        assert_eq!(row_colour(&timer(-2_000, Confidence::Measured)), CRITICAL);
-    }
-
-    #[test]
-    fn rows_are_fixed_width_and_the_rank_is_roman() {
-        let snap = Snapshot {
-            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
-            timers: vec![timer(11_800, Confidence::Measured)],
-            encounter: None,
-        };
-        let lines = hud_lines(&snap);
-        assert_eq!(lines[0].text, "7 kills");
-        assert_eq!(lines[1].text, EMPTY_PERSONAL);
-        assert_eq!(lines[2].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 11));
-        assert_eq!(fit("a very long mob name indeed", 20).chars().count(), 20);
-
-        // A timer seeded far above the four-digit column (512 eligible
-        // spells seed above 9999 s) still renders as "9999", not a wider
-        // number that would break the probe's fixed width.
-        let snap = Snapshot {
-            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7,
-            timers: vec![timer(100_000_000, Confidence::Measured)],
-            encounter: None,
-        };
-        let lines = hud_lines(&snap);
-        assert_eq!(lines[2].text, format!("{} {} {:>4}", fit("a jeering gargoyle", 20), fit("Mesmerization VI", 18), 9999));
-    }
-
-    #[test]
-    fn at_most_eight_rows_are_drawn() {
-        let snap = Snapshot {
-            v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 0,
-            timers: (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect(),
-            encounter: None,
-        };
-        assert_eq!(hud_lines(&snap).len(), 2 + MAX_ROWS);
-    }
-
-    use wisp_proto::{Encounter, MeterRow, Personal};
-
-    fn fight(active: bool) -> Encounter {
-        Encounter {
-            active,
-            duration_s: 42,
-            you: Personal { damage: 18_234, dps: 434, taken: 2_210, taken_ps: 52, healing: 900, hps: 21, overheal: 120 },
-            damage: vec![MeterRow { name: "Serenitee".to_string(), amount: 1_320_500, per_s: 286 }],
-            healing: vec![MeterRow { name: "Misery".to_string(), amount: 3_100, per_s: 74 }],
-        }
-    }
-
-    fn snap(encounter: Option<Encounter>) -> Snapshot {
-        Snapshot { v: 3, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7, timers: vec![], encounter }
-    }
-
-    #[test]
-    fn amounts_print_compactly() {
-        assert_eq!(compact(999), "999");
-        assert_eq!(compact(9_999), "9999");
-        assert_eq!(compact(18_234), "18.2k");
-        assert_eq!(compact(999_949), "999.9k");
-        assert_eq!(compact(1_320_500), "1.32M");
-    }
-
-    #[test]
-    fn the_personal_line_and_rows_are_laid_out_around_the_timers() {
-        let lines = hud_lines(&snap(Some(fight(true))));
-        assert_eq!(lines[0].text, "7 kills");
-        assert_eq!(lines[1].text, "DPS   434  in   52/s  HPS   21   0:42");
-        assert_eq!(lines[1].rgb, WHITE);
-        assert_eq!(lines[2].text, format!("{} {:>7} {:>5}/s", fit("Serenitee", NAME_COLS), "1.32M", 286));
-        assert_eq!(lines[2].rgb, WHITE);
-        assert_eq!(lines[3].text, format!("{} {:>7} {:>5}/s  +", fit("Misery", NAME_COLS), "3100", 74));
-        assert_eq!(lines.len(), 4);
-    }
-
-    #[test]
-    fn a_lingering_fight_dims_the_personal_line() {
-        let lines = hud_lines(&snap(Some(fight(false))));
-        assert_eq!(lines[1].rgb, DIM);
-    }
-
-    #[test]
-    fn no_fight_draws_the_empty_personal_line_and_no_rows() {
-        let lines = hud_lines(&snap(None));
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1].text, "DPS     -  in    -/s  HPS    -   -:--");
-        assert_eq!(lines[1].rgb, DIM);
-    }
-
-    #[test]
-    fn timer_rows_sit_between_the_personal_line_and_the_meter_rows() {
-        let mut s = snap(Some(fight(true)));
-        s.timers = vec![timer(11_800, Confidence::Measured)];
-        let lines = hud_lines(&s);
-        assert!(lines[1].text.starts_with("DPS"));
-        assert!(lines[2].text.contains("Mesmerization"));
-        assert!(lines[3].text.starts_with(&fit("Serenitee", NAME_COLS)));
-    }
-
-    #[test]
-    fn the_maximum_layout_is_one_kill_line_one_personal_line_eight_timers_five_damage_and_three_healing() {
-        let mut e = fight(true);
-        e.damage = (0..7).map(|i| MeterRow { name: format!("Player{i}"), amount: 1000 - i, per_s: 10 }).collect();
-        e.healing = (0..5).map(|i| MeterRow { name: format!("Healer{i}"), amount: 100 - i, per_s: 5 }).collect();
-        let mut s = snap(Some(e));
-        s.timers = (0..12).map(|i| timer(1000 * i, Confidence::Measured)).collect();
-        assert_eq!(hud_lines(&s).len(), 1 + 1 + MAX_ROWS + MAX_DAMAGE_ROWS + MAX_HEALING_ROWS);
-    }
-
-    use std::fs;
-    use std::path::PathBuf;
-
-    /// A file of its own per test, since the harness runs them in parallel
-    /// inside one process.
-    fn scratch_file(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("wisp-hud-{}-{tag}", std::process::id()))
-    }
 
     #[test]
     fn resolve_reports_where_the_value_came_from() {
@@ -495,8 +400,8 @@ mod tests {
 
     #[test]
     fn a_scale_flag_beats_the_config_file() {
-        let config = Config::parse("scale = 16\n");
-        assert_eq!(scale_of(resolve(Some("32"), config.get(Key::Scale))), Ok(32.0));
+        let config = Config::parse("[hud]\nscale = 16\n");
+        assert_eq!(scale_of(resolve(Some("32"), config.get(ConfigKey::Scale))), Ok(32.0));
     }
 
     #[test]
@@ -507,21 +412,21 @@ mod tests {
         // `wisp_config::config`'s own tests), which is not what this test is
         // about.
         let config = Config::parse("[hud]\nscale = 16\n");
-        assert_eq!(scale_of(resolve(None, config.get(Key::Scale))), Ok(16.0));
+        assert_eq!(scale_of(resolve(None, config.get(ConfigKey::Scale))), Ok(16.0));
     }
 
     #[test]
-    fn neither_gives_the_default_of_48() {
+    fn neither_gives_the_default_of_one() {
         let config = Config::parse("# no scale in here\n");
-        assert_eq!(config.get(Key::Scale), None);
-        assert_eq!(scale_of(resolve(None, config.get(Key::Scale))), Ok(48.0));
-        assert_eq!(DEFAULT_SCALE, 48.0);
+        assert_eq!(config.get(ConfigKey::Scale), None);
+        assert_eq!(scale_of(resolve(None, config.get(ConfigKey::Scale))), Ok(1.0));
+        assert_eq!(DEFAULT_SCALE, 1.0);
     }
 
     #[test]
     fn a_bad_scale_flag_exits_2_naming_the_flag() {
-        let config = Config::parse("scale = 16\n");
-        let refused = scale_of(resolve(Some("not-a-number"), config.get(Key::Scale))).unwrap_err();
+        let config = Config::parse("[hud]\nscale = 16\n");
+        let refused = scale_of(resolve(Some("not-a-number"), config.get(ConfigKey::Scale))).unwrap_err();
         assert_eq!(refused.code, 2);
         assert_eq!(refused.message, "wisp-hud: invalid --scale value: not-a-number");
         // The flag won, so the file's usable value is not what gets blamed.
@@ -531,7 +436,7 @@ mod tests {
     #[test]
     fn a_bad_scale_in_the_config_exits_2_naming_the_key() {
         let config = Config::parse("scale = not-a-number\n");
-        let refused = scale_of(resolve(None, config.get(Key::Scale))).unwrap_err();
+        let refused = scale_of(resolve(None, config.get(ConfigKey::Scale))).unwrap_err();
         assert_eq!(refused.code, 2, "the same exit code a bad flag earns");
         assert_eq!(refused.message, "wisp-hud: invalid config scale: not-a-number");
     }
@@ -540,10 +445,10 @@ mod tests {
     fn a_backend_flag_beats_the_config_file() {
         let config = Config::parse("backend = plain\n");
         assert_eq!(
-            backend_of(resolve(Some("gamescope"), config.get(Key::Backend))),
+            backend_of(resolve(Some("gamescope"), config.get(ConfigKey::Backend))),
             Ok(Some(BackendKind::GamescopeX11))
         );
-        assert_eq!(backend_of(resolve(None, config.get(Key::Backend))), Ok(Some(BackendKind::PlainWindow)));
+        assert_eq!(backend_of(resolve(None, config.get(ConfigKey::Backend))), Ok(Some(BackendKind::PlainWindow)));
         // Neither said, so no text wins and detection decides. `detect()` needs
         // a display, which is why it is not part of this function.
         assert_eq!(backend_of(resolve(None, None)), Ok(None));
@@ -554,7 +459,7 @@ mod tests {
     #[test]
     fn an_unknown_backend_in_the_config_is_refused_like_an_unknown_flag() {
         let config = Config::parse("backend = nonsense\n");
-        let from_file = backend_of(resolve(None, config.get(Key::Backend))).unwrap_err();
+        let from_file = backend_of(resolve(None, config.get(ConfigKey::Backend))).unwrap_err();
         let from_flag = backend_of(resolve(Some("nonsense"), None)).unwrap_err();
         assert_eq!(from_file.code, 2);
         assert_eq!(from_flag.code, 2);
@@ -568,9 +473,9 @@ mod tests {
         // string; interpolated raw, the message would end in ": " and read as
         // a value that went missing rather than the one the user wrote.
         let config = Config::parse("scale =\n");
-        assert_eq!(config.get(Key::Scale), Some(""));
+        assert_eq!(config.get(ConfigKey::Scale), Some(""));
         assert_eq!(
-            scale_of(resolve(None, config.get(Key::Scale))).unwrap_err().message,
+            scale_of(resolve(None, config.get(ConfigKey::Scale))).unwrap_err().message,
             "wisp-hud: invalid config scale: (empty)"
         );
         assert_eq!(
@@ -578,9 +483,9 @@ mod tests {
             "wisp-hud: invalid --scale value: (empty)"
         );
         let config = Config::parse("backend =\n");
-        assert_eq!(config.get(Key::Backend), Some(""));
+        assert_eq!(config.get(ConfigKey::Backend), Some(""));
         assert_eq!(
-            backend_of(resolve(None, config.get(Key::Backend))).unwrap_err().message,
+            backend_of(resolve(None, config.get(ConfigKey::Backend))).unwrap_err().message,
             "wisp-hud: invalid config backend: (empty)"
         );
         assert_eq!(
@@ -632,6 +537,15 @@ mod tests {
         assert_eq!(refused.message, "wisp-hud: invalid --backend value: pla\u{fffd}");
     }
 
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// A file of its own per test, since the harness runs them in parallel
+    /// inside one process.
+    fn scratch_file(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("wisp-hud-{}-{tag}", std::process::id()))
+    }
+
     #[test]
     fn an_unknown_config_key_is_reported_once_and_ignored() {
         let path = scratch_file("unknown-key");
@@ -648,11 +562,11 @@ mod tests {
         // reads as the legacy grammar, whose `scale` is now Spec 5's
         // converted multiplier (32 / 13), not the raw text Spec 4 read back.
         assert_eq!(
-            config.get(Key::Scale),
+            config.get(ConfigKey::Scale),
             Some("2.46"),
             "the keys Wisp does have are still read"
         );
-        assert_eq!(config.get(Key::Backend), None);
+        assert_eq!(config.get(ConfigKey::Backend), None);
         let _ = fs::remove_file(&path);
     }
 
@@ -672,8 +586,20 @@ mod tests {
         assert_eq!(config, Config::default());
         // Both keys fall back to their defaults: the file's `backend = plain`
         // is behind the same read that failed.
-        assert_eq!(scale_of(resolve(None, config.get(Key::Scale))), Ok(DEFAULT_SCALE));
-        assert_eq!(backend_of(resolve(None, config.get(Key::Backend))), Ok(None));
+        assert_eq!(scale_of(resolve(None, config.get(ConfigKey::Scale))), Ok(DEFAULT_SCALE));
+        assert_eq!(backend_of(resolve(None, config.get(ConfigKey::Backend))), Ok(None));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_bad_chord_is_named_in_the_refusal() {
+        let refused = chord_of("ctrl+super").unwrap_err();
+        assert_eq!(refused.code, 2);
+        assert_eq!(refused.message, "wisp-hud: invalid config hud.chord: super");
+    }
+
+    #[test]
+    fn a_good_chord_parses() {
+        assert_eq!(chord_of("ctrl+shift+grave").unwrap(), keys::Chord { ctrl: true, shift: true, alt: false, key: "grave".to_string() });
     }
 }

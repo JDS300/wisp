@@ -31,7 +31,15 @@ pub struct Theme {
     pub target_px: f32,     // 11.5
     pub kind_px: f32,       // 10.5
     pub nudge: i32,         // 4 (HUD mode arrow step; also the halo's outward offset)
-    pub shift_nudge: i32,   // 24 (HUD mode arrow step with Shift)
+    // 24 (HUD mode arrow step with Shift). `HudMode::handle` takes its own
+    // unscaled 4/24 (main.rs's NUDGE/SHIFT_NUDGE) rather than these two --
+    // the step has to feel the same size in key presses regardless of render
+    // scale -- so only `nudge` (the halo's offset, a drawn size like any
+    // other) is read by `paint.rs`. Kept here anyway for parity with `nudge`
+    // and because it is still spec §4.2's own scaled value, for a future
+    // reader that wants it.
+    #[allow(dead_code)]
+    pub shift_nudge: i32,
     // HUD-mode outline geometry (this task's brief, not §4.2's table):
     pub outline_offset: u32,            // 3, dashed/solid outline drawn this far outside a block
     pub outline_selected_thickness: u32, // 2, the selected block's solid outline
