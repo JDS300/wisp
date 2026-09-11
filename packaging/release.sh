@@ -97,8 +97,18 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
 for bin in wisp wispd wisp-hud; do
     install -m 0755 "$tar_root/$bin" "$appdir/usr/bin/$bin"
 done
-install -m 0644 "$here/io.github.jds300.Wisp.desktop" "$appdir/io.github.jds300.Wisp.desktop"
-install -m 0644 "$here/io.github.jds300.Wisp.desktop" \
+# The AppDir copies carry X-AppImage-Version so AppImage managers (Gear
+# Lever, AppImageLauncher) can show the installed version; the shared
+# source file stays unversioned because the tarball and the Flatpak use it
+# too. The key must be under [Desktop Entry], so it goes right after it.
+sed "/^\[Desktop Entry\]$/a X-AppImage-Version=${version}" \
+    "$here/io.github.jds300.Wisp.desktop" > "$stage/appimage.desktop"
+grep -q "^X-AppImage-Version=${version}$" "$stage/appimage.desktop" || {
+    echo "release.sh: could not add X-AppImage-Version to the desktop entry" >&2
+    exit 1
+}
+install -m 0644 "$stage/appimage.desktop" "$appdir/io.github.jds300.Wisp.desktop"
+install -m 0644 "$stage/appimage.desktop" \
     "$appdir/usr/share/applications/io.github.jds300.Wisp.desktop"
 install -m 0644 "$here/io.github.jds300.Wisp.svg" "$appdir/io.github.jds300.Wisp.svg"
 install -m 0644 "$here/io.github.jds300.Wisp.svg" \

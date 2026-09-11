@@ -7,6 +7,7 @@
 //! and `BufReader` are stdlib.
 
 use crate::{decode, ProtoError, Snapshot};
+use std::fmt;
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -17,6 +18,10 @@ pub struct SnapshotStream {
     reader: BufReader<UnixStream>,
     had_error: bool,
     timed_out: bool,
+    /// Bytes of a line `next_snapshot_within` has read but not yet completed
+    /// with a `\n`, so a timeout mid-line does not lose them: the next call
+    /// picks up where this one left off.
+    pending: Vec<u8>,
 }
 
 pub fn connect(path: &Path) -> io::Result<SnapshotStream> {
@@ -24,8 +29,36 @@ pub fn connect(path: &Path) -> io::Result<SnapshotStream> {
         reader: BufReader::new(UnixStream::connect(path)?),
         had_error: false,
         timed_out: false,
+        pending: Vec::new(),
     })
 }
+
+/// How the stream ended for [`SnapshotStream::next_snapshot_within`]: unlike
+/// `next_snapshot`, which logs a read error itself and returns `None` for
+/// every kind of ending, this reports which one so `wisp-hud` can print the
+/// right line and choose its exit code.
+#[derive(Debug)]
+pub enum StreamEnd {
+    /// A clean EOF: the daemon closed the connection.
+    Closed,
+    /// A line arrived but did not decode.
+    Error(ProtoError),
+    /// The read itself failed (not a timeout — see
+    /// [`SnapshotStream::next_snapshot_within`]).
+    Io(io::Error),
+}
+
+impl fmt::Display for StreamEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StreamEnd::Closed => write!(f, "daemon closed the connection"),
+            StreamEnd::Error(e) => write!(f, "{e}"),
+            StreamEnd::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamEnd {}
 
 impl SnapshotStream {
     /// Bounds how long `next_snapshot` will block waiting for the next line.
@@ -81,6 +114,68 @@ impl SnapshotStream {
     pub fn timed_out(&self) -> bool {
         self.timed_out
     }
+
+    /// Like [`next_snapshot`](Self::next_snapshot), but returns `Ok(None)`
+    /// when `timeout` passes with no complete line, leaving the stream
+    /// usable: a line read only partway through is kept in an internal
+    /// buffer rather than dropped, so the next call resumes it instead of
+    /// re-reading from the middle. Used by `wisp-hud`, which polls keys
+    /// between snapshots and cannot afford `next_snapshot`'s unbounded block.
+    ///
+    /// Sets the socket's read timeout on every call (cheap, and lets the
+    /// caller vary it) rather than requiring `set_read_timeout` up front;
+    /// unlike `next_snapshot`, a timeout here is not `had_error` or
+    /// `timed_out` — those two fields describe `next_snapshot`'s own
+    /// outcomes, and this method reports its ending through its return value
+    /// instead.
+    pub fn next_snapshot_within(&mut self, timeout: Duration) -> Result<Option<Snapshot>, StreamEnd> {
+        self.reader.get_ref().set_read_timeout(Some(timeout)).map_err(StreamEnd::Io)?;
+        loop {
+            let available = match self.reader.fill_buf() {
+                Ok(buf) => buf,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(StreamEnd::Io(e)),
+            };
+            if available.is_empty() {
+                // A clean EOF. A partial line sitting in `pending` with no
+                // trailing newline is still decoded, the same way
+                // `next_snapshot`'s `read_line` returns it rather than
+                // discarding it.
+                return if self.pending.is_empty() {
+                    Err(StreamEnd::Closed)
+                } else {
+                    self.decode_pending()
+                };
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(i) => {
+                    self.pending.extend_from_slice(&available[..=i]);
+                    self.reader.consume(i + 1);
+                    return self.decode_pending();
+                }
+                None => {
+                    let n = available.len();
+                    self.pending.extend_from_slice(available);
+                    self.reader.consume(n);
+                    // No newline yet and the buffer is drained: loop back to
+                    // `fill_buf`, which blocks (bounded by `timeout`) for more.
+                }
+            }
+        }
+    }
+
+    /// Decodes and clears `self.pending`, which holds one line (its trailing
+    /// `\n`, if any, is harmless -- `decode` trims it).
+    fn decode_pending(&mut self) -> Result<Option<Snapshot>, StreamEnd> {
+        let line = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        match decode(&line) {
+            Ok(snap) => Ok(Some(snap)),
+            Err(e) => Err(StreamEnd::Error(e)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -129,7 +224,7 @@ mod tests {
             let (mut sock, _) = listener.accept().unwrap();
             for seq in 1..=3 {
                 let line = format!(
-                    r#"{{"v":3,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
+                    r#"{{"v":4,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
                     seq * 10
                 );
                 sock.write_all(line.as_bytes()).unwrap();
@@ -207,6 +302,37 @@ mod tests {
     }
 
     #[test]
+    fn next_snapshot_within_times_out_on_a_half_line_then_completes_it() {
+        let (mut writer, sock) = UnixStream::pair().unwrap();
+        let mut stream = SnapshotStream {
+            reader: BufReader::new(sock),
+            had_error: false,
+            timed_out: false,
+            pending: Vec::new(),
+        };
+
+        writer.write_all(br#"{"v":4,"seq":1,"ts":"t","#).unwrap();
+        let started = std::time::Instant::now();
+        let result = stream.next_snapshot_within(Duration::from_millis(150)).unwrap();
+        let elapsed = started.elapsed();
+        assert!(result.is_none(), "a half line is not a complete snapshot yet");
+        assert!(elapsed < Duration::from_millis(800), "took {elapsed:?}, should give up near the timeout");
+
+        writer.write_all(br#""lines_ingested":0,"session_kills":0}"#).unwrap();
+        writer.write_all(b"\n").unwrap();
+        let snap = stream
+            .next_snapshot_within(Duration::from_millis(150))
+            .unwrap()
+            .expect("the completed line decodes");
+        assert_eq!(snap.seq, 1);
+
+        drop(writer);
+        // The stream is still usable after both calls: a clean EOF now, not
+        // an error and not the half-line's bytes resurfacing.
+        assert!(matches!(stream.next_snapshot_within(Duration::from_millis(150)), Err(StreamEnd::Closed)));
+    }
+
+    #[test]
     fn no_timeout_set_still_reads_a_line() {
         let socket = TempSocket::new("no-timeout");
         let listener = UnixListener::bind(socket.path()).unwrap();
@@ -217,7 +343,7 @@ mod tests {
             // behaviour `wisp-hud` depends on.
             std::thread::sleep(std::time::Duration::from_millis(50));
             let _ = sock.write_all(
-                b"{\"v\":3,\"seq\":1,\"ts\":\"t\",\"lines_ingested\":0,\"session_kills\":0}\n",
+                b"{\"v\":4,\"seq\":1,\"ts\":\"t\",\"lines_ingested\":0,\"session_kills\":0}\n",
             );
         });
 

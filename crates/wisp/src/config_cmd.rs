@@ -4,14 +4,50 @@
 //! The only part of Wisp that writes anything of the user's, and so the only
 //! part that has to be careful about a file it cannot read: replacing bytes it
 //! could not parse with a single key would silently delete every other setting
-//! in the file. Reading, parsing and rewriting a key is
-//! `wisp_config::config`'s; what is here is the refusal and the write.
+//! in the file. Reading, parsing and regenerating the file as TOML is
+//! `wisp_config::config`'s; the atomic write is `wisp_config::write`'s (the
+//! HUD's own save shares it too); what is here is the refusal.
 
 use std::fs;
 use std::io;
-use std::path::Path;
-use wisp_config::config::{set_in_text, Config, Key};
+use wisp_config::config::{is_valid_scale, Config, Key};
 use wisp_config::paths::config_path;
+use wisp_config::write::write_atomic;
+
+/// The refusal every writing verb owes a config file whose layout did not
+/// parse, in `wisp hud` as much as here: `Some(2)` when there is nothing safe
+/// to write.
+///
+/// `Config::parse` never fails, so a mistyped anchor or a `rows = "8"` is not
+/// an error the loader can raise — it keeps the last good layout, which for a
+/// file read from disk is [`wisp_config::layout::Layout::default_layout`],
+/// and records why. A reader can carry on with that. A writer cannot:
+/// `to_toml` regenerates the whole file from the parsed model, so writing one
+/// key back would replace the user's blocks with the default two, and their
+/// widths, rows and offsets would be gone — at exit 0, with nothing said. The
+/// error names the block, because once the write is refused that message is
+/// the only thing the user has to find the bad key with.
+pub fn refuse_unreadable_layout(config: &Config) -> Option<i32> {
+    let error = config.layout_error()?;
+    eprintln!("wisp: config: {error}");
+    eprintln!(
+        "wisp: refusing to rewrite a layout it could not read (that would replace it with the default); nothing was written"
+    );
+    Some(2)
+}
+
+/// [`Config::to_toml_checked`]'s text, or the exit code its refusal earns.
+///
+/// The guard is a post-condition rather than a check on anything the user
+/// did, so its message says whose bug it is; the exit code is still 2,
+/// because from the caller's side it is the same fact — this command wrote
+/// nothing.
+pub fn checked_toml(config: &Config) -> Result<String, i32> {
+    config.to_toml_checked().map_err(|e| {
+        eprintln!("wisp: {e}");
+        2
+    })
+}
 
 /// The file every binary reads, whether or not it exists yet.
 pub fn path() -> i32 {
@@ -54,7 +90,9 @@ pub fn show(config: &Config) -> i32 {
     0
 }
 
-/// Write one key, keeping every other line and comment byte for byte.
+/// Write one key. The file is regenerated as TOML from the parsed model
+/// (Spec 5): every other key the file already had is kept, but a comment is
+/// not.
 pub fn set(key: Key, value: &str) -> i32 {
     let path = match config_path() {
         Ok(path) => path,
@@ -79,7 +117,29 @@ pub fn set(key: Key, value: &str) -> i32 {
         }
     };
 
-    let text = set_in_text(&existing, key, value);
+    let mut config = Config::parse(&existing);
+    if let Some(code) = refuse_unreadable_layout(&config) {
+        return code;
+    }
+    // A scale that is a number has to be one the HUD can render at. Text that
+    // is not a number at all still goes through: `Key::Scale`'s value is kept
+    // as written so the HUD can refuse it and blame the file, which is what
+    // `wisp doctor` reports and what the HUD's own startup refusal says. A
+    // non-finite float is the one that cannot: `NaN` has no TOML spelling
+    // Rust's `Display` writes, so the file stopped being readable at all.
+    if key == Key::Scale {
+        if let Ok(factor) = value.trim().parse::<f32>() {
+            if !is_valid_scale(factor) {
+                eprintln!("wisp: config set scale: {value} is not a scale (a finite factor greater than 0)");
+                return 2;
+            }
+        }
+    }
+    config.set(key, value);
+    let text = match checked_toml(&config) {
+        Ok(text) => text,
+        Err(code) => return code,
+    };
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("wisp: cannot create {}: {e}", parent.display());
@@ -94,40 +154,6 @@ pub fn set(key: Key, value: &str) -> i32 {
         Err(e) => {
             eprintln!("wisp: cannot write {}: {e}", path.display());
             1
-        }
-    }
-}
-
-/// Write `text` to `path` through a temporary file in the same directory, then
-/// rename it into place.
-///
-/// The same directory because a rename across filesystems is not a rename, and
-/// the rename because a config file half-written is a config file that has lost
-/// every key the user did not touch. The temporary carries this process's id, so
-/// two `config set` commands cannot race over one name.
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
-    let Some(name) = name else {
-        return Err(io::Error::other("the config path has no file name"));
-    };
-    let temporary = path.with_file_name(format!("{name}.tmp-{}", std::process::id()));
-    {
-        use std::io::Write;
-        let mut file = fs::File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        // On the device before the rename, as `DurationStore::save` does. A
-        // rename that lands first can survive a crash pointing at a file whose
-        // contents never arrived, which is not a config that lost its last
-        // write but one that lost every key.
-        file.sync_all()?;
-    }
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        // A failure here is a failure to have written anything, and the
-        // temporary must not be left beside the file it was going to become.
-        Err(e) => {
-            let _ = fs::remove_file(&temporary);
-            Err(e)
         }
     }
 }

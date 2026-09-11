@@ -11,7 +11,7 @@
 use crate::durations::{seed_secs, DurationStore};
 use crate::rules::{body, classify, parse_log_time, split_rank, timestamp_text, Event};
 use crate::spells::{SpellTable, MEZ_PROSE};
-use wisp_proto::{Confidence, Timer, TimerKind};
+use wisp_proto::{Confidence, DamageType, Timer, TimerKind};
 
 /// One server tick, the slack allowed after a cast and after an expiry.
 const TICK: i64 = 6;
@@ -25,6 +25,7 @@ pub struct TrackerStats {
     pub pending_expired: u64,
     pub armed: u64,
     pub armed_mez: u64,
+    pub armed_slow: u64,
     pub armed_dot: u64,
     pub armed_debuff: u64,
     pub promoted_to_dot: u64,
@@ -53,6 +54,7 @@ struct Active {
     spell: String,
     rank: u8,
     kind: TimerKind,
+    damage_type: Option<DamageType>,
     landed_at: i64,
     duration_s: u32,
     measured: bool,
@@ -199,6 +201,7 @@ impl Tracker {
                 spell: a.spell.clone(),
                 rank: a.rank,
                 kind: a.kind,
+                damage_type: a.damage_type,
                 remaining_ms: ((a.expiry() as f64 - now_secs) * 1000.0).round() as i64,
                 duration_ms: a.duration_s as u64 * 1000,
                 confidence: if a.measured { Confidence::Measured } else { Confidence::Estimated },
@@ -252,16 +255,28 @@ impl Tracker {
         Some(self.pending.remove(i))
     }
 
+    /// The table's classification for a spell, defaulting to `Debuff` for a
+    /// spell not in the table (never eligible, e.g. instant or buff).
+    fn table_kind(&self, spell: &str) -> TimerKind {
+        self.table.get(spell).map(|s| s.kind).unwrap_or(TimerKind::Debuff)
+    }
+
     fn arm(&mut self, target: &str, spell: &str, rank: u8, kind: TimerKind, now: i64) {
         let cap = self.table.get(spell).expect("known").cap_ticks;
         let measured = self.store.measured(spell, rank);
         let duration_s = measured.unwrap_or_else(|| seed_secs(cap, rank));
+        let damage_type = if kind == TimerKind::Dot {
+            Some(self.table.get(spell).map(|s| s.damage_type).unwrap_or(DamageType::Unresistable))
+        } else {
+            None
+        };
         self.active.push(Active {
             key: key_of(target),
             target: target.to_string(),
             spell: spell.to_string(),
             rank,
             kind,
+            damage_type,
             landed_at: now,
             duration_s,
             measured: measured.is_some(),
@@ -270,6 +285,7 @@ impl Tracker {
         self.stats.armed += 1;
         match kind {
             TimerKind::Mez => self.stats.armed_mez += 1,
+            TimerKind::Slow => self.stats.armed_slow += 1,
             TimerKind::Dot => self.stats.armed_dot += 1,
             TimerKind::Debuff => self.stats.armed_debuff += 1,
         }
@@ -277,15 +293,21 @@ impl Tracker {
 
     fn dot_tick(&mut self, target: &str, spell: &str, now: i64) {
         if let Some(p) = self.take_pending(spell, now) {
-            self.arm(target, spell, p.rank, TimerKind::Dot, now);
+            let kind = match self.table_kind(spell) {
+                k @ (TimerKind::Mez | TimerKind::Slow) => k,
+                _ => TimerKind::Dot,
+            };
+            self.arm(target, spell, p.rank, kind, now);
             return;
         }
         let k = key_of(target);
+        let damage_type = self.table.get(spell).map(|s| s.damage_type).unwrap_or(DamageType::Unresistable);
         for a in self.active.iter_mut().filter(|a| a.key == k && a.spell == spell) {
             a.last_tick = now;
             self.stats.ticks_heartbeat += 1;
-            if a.kind != TimerKind::Dot {
+            if a.kind == TimerKind::Debuff {
                 a.kind = TimerKind::Dot;
+                a.damage_type = Some(damage_type);
                 self.stats.promoted_to_dot += 1;
             }
         }
@@ -321,7 +343,7 @@ impl Tracker {
             };
             if now <= p.deadline && text.len() > lands.len() && text.ends_with(lands) {
                 let target = &text[..text.len() - lands.len()];
-                let kind = if lands == MEZ_PROSE { TimerKind::Mez } else { TimerKind::Debuff };
+                let kind = if lands == MEZ_PROSE { TimerKind::Mez } else { self.table_kind(&p.spell) };
                 let p = self.pending.remove(i);
                 self.arm(target, &p.spell, p.rank, kind, now);
                 return;
@@ -353,12 +375,21 @@ mod tests {
     use wisp_proto::{Confidence, TimerKind};
 
     fn row(id: u32, name: &str, cast_ms: u32, cap: &str, good: u32) -> String {
+        row_full(id, name, cast_ms, cap, good, "0", "")
+    }
+
+    // Seven real fields (id, name, cast_ms at 8, cap at 12, good_effect at
+    // 28, resist_type at 29, effects blob at 172); the rest are filler so
+    // every row has exactly 173 fields. No game data is copied.
+    fn row_full(id: u32, name: &str, cast_ms: u32, cap: &str, good: u32, resist: &str, effects: &str) -> String {
         let mut f: Vec<String> = vec!["0".to_string(); 173];
         f[0] = id.to_string();
         f[1] = name.to_string();
         f[8] = cast_ms.to_string();
         f[12] = cap.to_string();
         f[28] = good.to_string();
+        f[29] = resist.to_string();
+        f[172] = effects.to_string();
         f.join("^")
     }
 
@@ -377,6 +408,19 @@ mod tests {
 
     fn tracker() -> Tracker {
         Tracker::new(table(), crate::durations::DurationStore::empty())
+    }
+
+    /// A tracker over a hand-written table: `spell_rows` are `row_full(...)`
+    /// lines, `strings` pairs a row id with its landing prose (leading space
+    /// included).
+    fn tracker_with(spell_rows: &[String], strings: &[(u32, &str)]) -> Tracker {
+        let spells = spell_rows.join("\n");
+        let mut text = "#h^^^^^^\n".to_string();
+        for (id, prose) in strings {
+            text.push_str(&format!("{id}^^^^{prose}^^\n"));
+        }
+        let table = SpellTable::parse(&spells, &text).unwrap();
+        Tracker::new(table, crate::durations::DurationStore::empty())
     }
 
     // Lines at a given second offset from a fixed base time.
@@ -679,6 +723,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_landing_takes_its_kind_from_the_table_and_a_dot_carries_its_type() {
+        let mut t = tracker_with(
+            &[
+                row_full(1, "Turgur's Insects", 3000, "65", 0, "1", "2|11|85|0|102|25"),
+                row_full(2, "Envenomed Bolt", 3000, "6", 0, "4", "3|0|-295|0|102|351"),
+            ],
+            &[(1, " looks sluggish."), (2, " has been poisoned.")],
+        );
+        t.observe(&at(0, "You begin casting Turgur's Insects."));
+        t.observe(&at(3, "a rat looks sluggish."));
+        t.observe(&at(4, "You begin casting Envenomed Bolt."));
+        t.observe(&at(7, "a rat has been poisoned."));
+        let timers = t.timers(7.0);
+        let slow = timers.iter().find(|x| x.spell == "Turgur's Insects").unwrap();
+        assert_eq!((slow.kind, slow.damage_type), (TimerKind::Slow, None));
+        let dot = timers.iter().find(|x| x.spell == "Envenomed Bolt").unwrap();
+        assert_eq!((dot.kind, dot.damage_type), (TimerKind::Dot, Some(DamageType::Poison)));
+        assert_eq!(t.stats().armed_slow, 1);
+    }
+
+    #[test]
+    fn a_tick_promotes_a_debuff_but_never_a_slow_or_a_mez() {
+        let mut t = tracker_with(
+            &[
+                row_full(1, "Tepid Deeds", 3000, "65", 0, "1", "2|11|80|0|101|50$3|35|9|0|100|0"),
+                row_full(2, "Tashani", 3000, "4", 0, "0", "2|50|-10|0|101|23"),
+            ],
+            &[(1, " looks sluggish."), (2, " looks weaker.")],
+        );
+        t.observe(&at(0, "You begin casting Tepid Deeds."));
+        t.observe(&at(3, "a rat looks sluggish."));
+        t.observe(&at(4, "You begin casting Tashani."));
+        t.observe(&at(7, "a rat looks weaker."));
+        t.observe(&at(13, "A rat has taken 12 damage from your Tepid Deeds."));
+        t.observe(&at(13, "A rat has taken 3 damage from your Tashani."));
+        let timers = t.timers(13.0);
+        assert_eq!(timers.iter().find(|x| x.spell == "Tepid Deeds").unwrap().kind, TimerKind::Slow);
+        let tash = timers.iter().find(|x| x.spell == "Tashani").unwrap();
+        assert_eq!((tash.kind, tash.damage_type), (TimerKind::Dot, Some(DamageType::Unresistable)));
+        assert_eq!(t.stats().promoted_to_dot, 1, "only the debuff was promoted");
+    }
+
     /// The acceptance replay. Skipped unless both variables are set:
     /// `WISP_EQL_DIR=<install> WISP_FIXTURE=<frozen fixture> cargo test -p wispd --release -- --ignored replay`
     #[test]
@@ -695,6 +782,13 @@ mod tests {
             t.observe(line.trim_end_matches('\r'));
         }
         let s = t.stats().clone();
+        // The kinds are now classified from the spell table instead of
+        // defaulting to Debuff: armed_mez, armed_slow, armed_dot,
+        // armed_debuff and promoted_to_dot redistribute (and, since Awakened
+        // now finds a mez row it previously missed, so do ended_awakened,
+        // ended_slain and ended_expired), but every kind-independent count
+        // -- and the sum within each redistributed group -- is unchanged
+        // from Spec 2's and Spec 3's numbers.
         assert_eq!(
             s,
             TrackerStats {
@@ -702,15 +796,16 @@ mod tests {
                 pending_cancelled: 730,
                 pending_expired: 399,
                 armed: 5972,
-                armed_mez: 822,
-                armed_dot: 214,
-                armed_debuff: 4936,
-                promoted_to_dot: 2097,
+                armed_mez: 872,
+                armed_slow: 910,
+                armed_dot: 3243,
+                armed_debuff: 947,
+                promoted_to_dot: 0,
                 ticks_heartbeat: 12814,
                 ended_worn_off: 1660,
-                ended_awakened: 19,
-                ended_slain: 2042,
-                ended_expired: 2107,
+                ended_awakened: 21,
+                ended_slain: 2041,
+                ended_expired: 2106,
                 cleared_by_zone: 144,
                 samples: 1060,
                 samples_discarded_short: 600,

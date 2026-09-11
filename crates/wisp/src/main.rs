@@ -11,6 +11,7 @@
 mod args;
 mod config_cmd;
 mod doctor;
+mod hud_cmd;
 mod run;
 mod status;
 
@@ -25,14 +26,22 @@ use wisp_config::config::{Config, Key};
 /// Only `--log` and `--logs-dir` are alternatives to each other, so only they
 /// share a bracket: `--spells` is an independent third setting, and `--scale`
 /// and `--backend` are two settings of the HUD's that a launch may give together.
-const USAGE: &str = "\
+///
+/// `pub(crate)` rather than private: [`args::hud_command`] reprints this whole
+/// text for any malformed `wisp hud` invocation, so the two must not drift.
+pub(crate) const USAGE: &str = "\
 usage: wisp run [--log <path> | --logs-dir <dir>] [--spells <dir>] [--from-start] [--stub]
-                [--scale <px>] [--backend <name>] [-- <command>...]
+                [--scale <factor>] [--backend <name>] [-- <command>...]
        wisp status [--json]
-       wisp doctor [--log <path> | --logs-dir <dir>] [--spells <dir>] [--scale <px>] [--backend <name>]
+       wisp doctor [--log <path> | --logs-dir <dir>] [--spells <dir>] [--scale <factor>] [--backend <name>]
        wisp config path | show | set <key> <value>
+       wisp hud [list]
+       wisp hud place <n> <anchor> <x> <y> | nudge <n> <dx> <dy> | set <n> <key> <value>
+       wisp hud add meter|timers | remove <n> | scale <factor> | output <name>|auto
        wisp version | --version
        config keys: log, logs_dir, spells_dir, scale, backend
+       anchors: top-left top top-right left center right bottom-left bottom bottom-right
+       block keys: shows (damage|healing), segment (fight|session), width, rows, hidden (true|false)
 ";
 
 fn main() {
@@ -64,6 +73,7 @@ fn dispatch(command: Command) -> i32 {
             status::status(json)
         }
         Command::Doctor(args) => doctor::doctor(&config_or_report(), &args),
+        Command::Hud(command) => hud_cmd::hud(command),
         Command::Config(ConfigCommand::Path) => config_cmd::path(),
         Command::Config(ConfigCommand::Show) => config_cmd::show(&config_or_report()),
         Command::Config(ConfigCommand::Set(key, value)) => config_cmd::set(key, &value),

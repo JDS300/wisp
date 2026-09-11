@@ -289,7 +289,10 @@ Three more files live once under `packaging/` and are copied by the scripts into
 the tarball, the AppDir and the Flatpak. `io.github.jds300.Wisp.desktop`:
 `Type=Application`, `Name=Wisp`, `Comment=` Spec 0's subtitle,
 `Icon=io.github.jds300.Wisp`, `Exec=wisp run`, `Terminal=false`,
-`Categories=Game;Utility;`, `NoDisplay=false`.
+`Categories=Game;Utility;`, `NoDisplay=false`. The two AppDir copies also carry
+`X-AppImage-Version=<version>` (added by `release.sh`, 2026-09-11) so AppImage
+managers such as Gear Lever can show the installed version; the tarball and
+Flatpak copies do not.
 `io.github.jds300.Wisp.metainfo.xml`: MIT, `<name>Wisp</name>`, `<summary>` Spec
 0's store subtitle — *EverQuest log parser and in-game overlay for Linux and
 Steam Deck* — the tagline *A light over the fight.* as the first description

@@ -3,7 +3,7 @@
 //! A zwlr_layer_shell_v1 surface on the overlay layer, for desktop Wayland
 //! sessions not running under gamescope: KDE, Sway, Hyprland, river.
 
-use crate::backend::{BackendError, Frame, OverlayBackend};
+use crate::backend::{BackendError, Frame, OverlayBackend, Rect};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -33,7 +33,9 @@ struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
     shm: Shm,
-    configured: bool,
+    /// Set by every `configure`, to the size it carried. `attach` waits for
+    /// one where both dimensions are non-zero.
+    new_size: Option<(u32, u32)>,
     closed: bool,
 }
 
@@ -120,12 +122,13 @@ impl LayerShellHandler for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        // The size we asked for is the size we keep; a compositor-suggested
-        // size is only ever a suggestion for this fixed-size HUD.
-        self.configured = true;
+        // Stored rather than acted on here: `attach` is the one place that
+        // decides whether a given size is usable (non-zero) and when to stop
+        // waiting.
+        self.new_size = Some(configure.new_size);
     }
 }
 
@@ -146,6 +149,10 @@ delegate_dispatch2!(AppState);
 delegate_registry!(AppState);
 
 pub struct LayerShellBackend {
+    /// The `wl_output` name (e.g. `DP-1`) to place the surface on, or `None`
+    /// to let the compositor choose. Set once at construction; `attach`
+    /// resolves it against the live output list.
+    output: Option<String>,
     width: u32,
     height: u32,
     conn: Option<Connection>,
@@ -153,28 +160,25 @@ pub struct LayerShellBackend {
     state: Option<AppState>,
     pool: Option<SlotPool>,
     layer: Option<LayerSurface>,
-    /// Set the first time `present` sees a frame bigger than the window, so
-    /// the clip warning is printed once rather than every frame at 5 Hz.
-    warned_clipped: bool,
 }
 
 impl LayerShellBackend {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(output: Option<&str>) -> Self {
         LayerShellBackend {
-            width,
-            height,
+            output: output.map(str::to_string),
+            width: 0,
+            height: 0,
             conn: None,
             event_queue: None,
             state: None,
             pool: None,
             layer: None,
-            warned_clipped: false,
         }
     }
 }
 
 impl OverlayBackend for LayerShellBackend {
-    fn attach(&mut self) -> Result<(), BackendError> {
+    fn attach(&mut self) -> Result<(u32, u32), BackendError> {
         let conn =
             Connection::connect_to_env().map_err(|e| BackendError::Unavailable(e.to_string()))?;
 
@@ -188,6 +192,36 @@ impl OverlayBackend for LayerShellBackend {
             .map_err(|e| BackendError::Unavailable(e.to_string()))?;
         let shm =
             Shm::bind(&globals, &qh).map_err(|e| BackendError::Unavailable(e.to_string()))?;
+
+        let mut state = AppState {
+            registry_state: RegistryState::new(&globals),
+            output_state: OutputState::new(&globals, &qh),
+            shm,
+            new_size: None,
+            closed: false,
+        };
+
+        // One roundtrip so every output already known from
+        // `registry_queue_init` has delivered its name (and the rest of its
+        // `wl_output` info) before `self.output` is looked up against it.
+        event_queue
+            .roundtrip(&mut state)
+            .map_err(|e| BackendError::Failed(e.to_string()))?;
+
+        let output = self.output.as_deref().and_then(|name| {
+            let found = state.output_state.outputs().find(|o| {
+                state.output_state.info(o).and_then(|info| info.name).as_deref() == Some(name)
+            });
+            if found.is_none() {
+                let list: Vec<String> = state
+                    .output_state
+                    .outputs()
+                    .filter_map(|o| state.output_state.info(&o).and_then(|info| info.name))
+                    .collect();
+                eprintln!("wisp-hud: output {name} not found; outputs: {}", list.join(", "));
+            }
+            found
+        });
 
         let surface = compositor.create_surface(&qh);
 
@@ -204,28 +238,33 @@ impl OverlayBackend for LayerShellBackend {
             surface,
             Layer::Overlay,
             Some("wisp-hud"),
-            None,
+            output.as_ref(),
         );
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_exclusive_zone(0);
-        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-        layer.set_margin(16, 0, 0, 16);
-        layer.set_size(self.width, self.height);
+        // Anchored to all four edges with a zero requested size: this asks
+        // the compositor for the whole output, the same "screen-sized
+        // surface" contract every other backend gives.
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_margin(0, 0, 0, 0);
+        layer.set_size(0, 0);
         layer.commit();
-
-        let mut state = AppState {
-            registry_state: RegistryState::new(&globals),
-            output_state: OutputState::new(&globals, &qh),
-            shm,
-            configured: false,
-            closed: false,
-        };
 
         // Bounded, not an unconditional loop: a compositor that never sends
         // a configure (misbehaving, or a layer-shell version that silently
         // rejects the surface) must not hang attach() forever.
         let configure_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !state.configured && !state.closed {
+        let (width, height) = loop {
+            if let Some((w, h)) = state.new_size {
+                if w != 0 && h != 0 {
+                    break (w, h);
+                }
+            }
+            if state.closed {
+                return Err(BackendError::Failed(
+                    "layer surface was closed before it was configured".to_string(),
+                ));
+            }
             if std::time::Instant::now() >= configure_deadline {
                 return Err(BackendError::Failed(
                     "timed out waiting for the compositor to configure the layer surface"
@@ -235,34 +274,24 @@ impl OverlayBackend for LayerShellBackend {
             event_queue
                 .blocking_dispatch(&mut state)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
-        }
-        if state.closed {
-            return Err(BackendError::Failed(
-                "layer surface was closed before it was configured".to_string(),
-            ));
-        }
+        };
 
-        let pool = SlotPool::new((self.width * self.height * 4).max(1) as usize, &state.shm)
+        let pool = SlotPool::new((width * height * 4).max(1) as usize, &state.shm)
             .map_err(|e| BackendError::Failed(e.to_string()))?;
 
+        self.width = width;
+        self.height = height;
         self.conn = Some(conn);
         self.event_queue = Some(event_queue);
         self.state = Some(state);
         self.pool = Some(pool);
         self.layer = Some(layer);
-        Ok(())
+        Ok((width, height))
     }
 
-    fn present(&mut self, frame: &Frame) -> Result<(), BackendError> {
-        if frame.width == 0 || frame.height == 0 {
+    fn present(&mut self, frame: &Frame, dirty: &[Rect]) -> Result<(), BackendError> {
+        if dirty.is_empty() {
             return Ok(());
-        }
-        if !self.warned_clipped && (frame.width > self.width || frame.height > self.height) {
-            eprintln!(
-                "wisp-hud: frame {}x{} exceeds the window {}x{}; clipping",
-                frame.width, frame.height, self.width, self.height
-            );
-            self.warned_clipped = true;
         }
         let (Some(event_queue), Some(state), Some(pool), Some(layer)) = (
             self.event_queue.as_mut(),
@@ -306,7 +335,15 @@ impl OverlayBackend for LayerShellBackend {
         }
 
         let wl_surface = layer.wl_surface();
-        wl_surface.damage_buffer(0, 0, width as i32, height as i32);
+        // One damage_buffer per dirty rect, clipped to the buffer, instead of
+        // one for the whole surface: the compositor is told exactly which
+        // pixels changed rather than repainting everything downstream.
+        let bounds = Rect::new(0, 0, width, height);
+        for &rect in dirty {
+            if let Some(clipped) = rect.intersect(bounds) {
+                wl_surface.damage_buffer(clipped.x, clipped.y, clipped.w as i32, clipped.h as i32);
+            }
+        }
         let _ = buffer.attach_to(wl_surface);
         layer.commit();
 

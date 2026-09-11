@@ -20,6 +20,9 @@
        data ships with it.</p>
   </description>
   <launchable type="desktop-id">io.github.jds300.Wisp.desktop</launchable>
-  <releases><release version="0.1.0" date="2026-09-09"/></releases>
+  <releases>
+    <release version="0.2.0" date="2026-09-11"/>
+    <release version="0.1.0" date="2026-09-09"/>
+  </releases>
   <provides><binary>wisp</binary><binary>wispd</binary><binary>wisp-hud</binary></provides>
 </component>

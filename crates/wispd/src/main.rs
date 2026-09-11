@@ -18,7 +18,7 @@ use wisp_config::config::Config;
 use wisp_config::discover::scan_logs_dir;
 use wisp_config::paths::{config_path, socket_path};
 use wisp_config::source::{resolve_log_source, resolve_spells_dir, LogSource};
-use wisp_proto::{Confidence, Encounter, MeterRow, Personal, Snapshot, Timer, TimerKind, PROTOCOL_VERSION};
+use wisp_proto::{Confidence, DamageType, Encounter, MeterRow, Personal, Snapshot, Timer, TimerKind, PROTOCOL_VERSION};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -351,8 +351,9 @@ fn no_log_to_read() -> ! {
     std::process::exit(2);
 }
 
-/// Two synthetic rows that count down and restart, so the HUD can be built
-/// and eyeballed without a log or the client data.
+/// Four synthetic rows that count down and restart, so the HUD can be built
+/// and eyeballed without a log or the client data. Two targets, so the
+/// HUD's grouping has two groups to draw.
 fn stub_timers(seq: u64) -> Vec<Timer> {
     let phase_ms = (seq * 250 % 40_000) as i64;
     vec![
@@ -361,18 +362,40 @@ fn stub_timers(seq: u64) -> Vec<Timer> {
             spell: "Mesmerization".to_string(),
             rank: 6,
             kind: TimerKind::Mez,
+            damage_type: None,
             remaining_ms: 38_000 - phase_ms,
             duration_ms: 38_000,
             confidence: Confidence::Measured,
         },
         Timer {
-            target: "Guard Drazden".to_string(),
+            target: "a jeering gargoyle".to_string(),
+            spell: "Turgur's Insects".to_string(),
+            rank: 0,
+            kind: TimerKind::Slow,
+            damage_type: None,
+            remaining_ms: 41_000 - phase_ms,
+            duration_ms: 41_000,
+            confidence: Confidence::Measured,
+        },
+        Timer {
+            target: "an elite gnoll shaman".to_string(),
+            spell: "Envenomed Bolt".to_string(),
+            rank: 0,
+            kind: TimerKind::Dot,
+            damage_type: Some(DamageType::Poison),
+            remaining_ms: 30_000 - phase_ms,
+            duration_ms: 30_000,
+            confidence: Confidence::Measured,
+        },
+        Timer {
+            target: "an elite gnoll shaman".to_string(),
             spell: "Pacify".to_string(),
             rank: 5,
             kind: TimerKind::Debuff,
+            damage_type: None,
             remaining_ms: 63_000 - phase_ms,
             duration_ms: 63_000,
-            confidence: Confidence::Estimated,
+            confidence: Confidence::Measured,
         },
     ]
 }

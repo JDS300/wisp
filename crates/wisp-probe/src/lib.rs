@@ -17,7 +17,7 @@ use x11rb::protocol::xproto::ConnectionExt as _;
 
 use wayland_client::{
     globals::{registry_queue_init, GlobalListContents},
-    protocol::wl_registry,
+    protocol::{wl_output, wl_registry},
     Connection as WaylandConnection, Dispatch, QueueHandle,
 };
 
@@ -140,6 +140,78 @@ fn try_wayland_globals() -> Option<Vec<String>> {
 /// tells "no display" apart from "not advertised".
 pub fn wayland_globals() -> Vec<String> {
     try_wayland_globals().unwrap_or_default()
+}
+
+/// `None` when there was no Wayland display to bind an output on.
+fn try_outputs() -> Option<Vec<String>> {
+    // A minimal Dispatch target: the registry side is unused (the initial
+    // snapshot below is all `outputs` needs), and the output side collects
+    // the one event this probe cares about.
+    struct OutputNames {
+        names: Vec<String>,
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for OutputNames {
+        fn event(
+            _state: &mut Self,
+            _proxy: &wl_registry::WlRegistry,
+            _event: wl_registry::Event,
+            _data: &GlobalListContents,
+            _conn: &WaylandConnection,
+            _qh: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<wl_output::WlOutput, ()> for OutputNames {
+        fn event(
+            state: &mut Self,
+            _proxy: &wl_output::WlOutput,
+            event: wl_output::Event,
+            _data: &(),
+            _conn: &WaylandConnection,
+            _qh: &QueueHandle<Self>,
+        ) {
+            if let wl_output::Event::Name { name } = event {
+                state.names.push(name);
+            }
+        }
+    }
+
+    let conn = WaylandConnection::connect_to_env().ok()?;
+    let (globals, mut queue) = registry_queue_init::<OutputNames>(&conn).ok()?;
+    let qh = queue.handle();
+
+    // Every `wl_output` global, named and versioned, from the snapshot
+    // `registry_queue_init` already took -- `outputs` opens no surface, so
+    // nothing here needs a second look at the registry.
+    let output_globals: Vec<(u32, u32)> = globals.contents().with_list(|list| {
+        list.iter()
+            .filter(|global| global.interface == "wl_output")
+            .map(|global| (global.name, global.version))
+            .collect()
+    });
+
+    // Bound at the lowest of the global's own version and 4, the version
+    // that added the `name` event this probe reads; held until the roundtrip
+    // below delivers it, since a proxy dropped early gives up nothing sent
+    // to the server but a compositor could still race the queue emptying.
+    let bound: Vec<wl_output::WlOutput> = output_globals
+        .into_iter()
+        .map(|(name, version)| globals.registry().bind(name, version.min(4), &qh, ()))
+        .collect();
+
+    let mut state = OutputNames { names: Vec::new() };
+    queue.roundtrip(&mut state).ok()?;
+    drop(bound);
+    Some(state.names)
+}
+
+/// Names of the Wayland outputs (`wl_output` names) on `$WAYLAND_DISPLAY`,
+/// empty when there is no Wayland display. One connection, one roundtrip
+/// beyond the registry's own, no surface.
+pub fn outputs() -> Vec<String> {
+    try_outputs().unwrap_or_default()
 }
 
 /// The choice and everything that led to it, so a caller can explain itself

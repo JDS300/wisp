@@ -336,7 +336,12 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     // `config set` creates the directory the file lives in; nothing else does.
-    assert_eq!(fs::read_to_string(s.config_file()).unwrap(), format!("logs_dir = {value}\n"));
+    // The file is `to_toml()`'s output (Spec 5): a full regeneration from the
+    // model rather than a text edit, so this checks the one key's line and
+    // that the layout section is there, not the whole file byte for byte.
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with(&format!("logs_dir = \"{value}\"\n")), "{written}");
+    assert!(written.contains("[hud]"), "{written}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         format!("{}\n", s.config_file().display()),
@@ -345,11 +350,14 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
 
     let out = s.command(&wisp()).arg("config").arg("show").output().unwrap();
     let shown = String::from_utf8_lossy(&out.stdout).into_owned();
-    // Byte for byte: the value is everything after the first `=`, trimmed, so a
-    // path with spaces needs no quoting and survives the round trip whole.
+    // The path survives the round trip whole, spaces and all.
     assert!(shown.contains(&format!("logs_dir = {value}\n")), "{shown}");
     assert!(shown.contains("log = (unset)\n"), "{shown}");
-    assert!(shown.contains("scale = (unset)\n"), "{shown}");
+    // `scale` reads `[hud].scale`, and every write regenerates a `[hud]`
+    // table (Spec 5), so a key `config set` never touched is no longer
+    // `(unset)` the way a legacy-grammar key would be: it is the layout's
+    // own default.
+    assert!(shown.contains("scale = 1.0\n"), "{shown}");
 
     // Nothing but the config file: the write went through a temporary in the
     // same directory, and the rename took it away.
@@ -361,7 +369,11 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
 }
 
 #[test]
-fn config_set_preserves_a_comment() {
+fn config_set_regenerates_the_file_as_toml_and_drops_comments() {
+    // `to_toml()` is a full regeneration from the parsed model (Spec 5), not
+    // a text edit: a comment in the user's file is lost, and that is
+    // accepted by the spec so `wisp config set` and the HUD's own save can
+    // share one writer. The key the write did not touch survives.
     let s = scratch("config-set-comment");
     s.write_config("# Wisp\n# log = /commented-out\nlog = /a\n");
     let out = s
@@ -370,22 +382,20 @@ fn config_set_preserves_a_comment() {
         .output()
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(
-        fs::read_to_string(s.config_file()).unwrap(),
-        "# Wisp\n# log = /commented-out\nlog = /a\nscale = 32\n"
-    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with("log = \"/a\"\n\n[hud]\nscale = 32.0\n"), "{written}");
+    assert!(!written.contains("commented-out"), "{written}");
 
-    // Setting a key that is already there replaces its line and leaves the rest.
+    // Setting a key that is already there replaces its value, not the whole
+    // file: the previous `set` is kept.
     let out = s
         .command(&wisp())
         .args(["config", "set", "log", "/b"])
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(
-        fs::read_to_string(s.config_file()).unwrap(),
-        "# Wisp\n# log = /commented-out\nlog = /b\nscale = 32\n"
-    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with("log = \"/b\"\n\n[hud]\nscale = 32.0\n"), "{written}");
 }
 
 #[test]
@@ -429,7 +439,7 @@ fn version_prints_wisp_and_the_crate_version() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn status_json_against_a_stub_daemon_is_one_v3_line() {
+fn status_json_against_a_stub_daemon_is_one_v4_line() {
     let s = scratch("status-json");
     let _daemon = s.stub_daemon();
 
@@ -439,7 +449,7 @@ fn status_json_against_a_stub_daemon_is_one_v3_line() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "one snapshot, one line: {stdout}");
     let snapshot = wisp_proto::decode(lines[0]).expect("a line the codec accepts");
-    assert_eq!(snapshot.v, 3);
+    assert_eq!(snapshot.v, 4);
     assert_eq!(snapshot.v, wisp_proto::PROTOCOL_VERSION);
 
     // The text form of the same daemon names the fields rather than the JSON.
@@ -588,7 +598,9 @@ fn doctor_exits_1_and_prints_the_config_path_when_no_log_resolves() {
         stdout.contains(&format!("socket:    {} (nothing listening)", s.socket().display())),
         "{stdout}"
     );
-    assert!(stdout.contains("scale:     48 (default)\n"), "{stdout}");
+    // The HUD's own default (Spec 5 made `scale` a multiplier, not Spec 4's
+    // font pixel size), and the word that says which of the two it is.
+    assert!(stdout.contains("scale:     1 (factor, default)\n"), "{stdout}");
     // Detection ran, so a backend is named with both of its observations; which
     // one it is depends on the machine, and is not this test's business.
     assert!(stdout.contains("backend:   "), "{stdout}");
@@ -692,7 +704,279 @@ fn doctor_exits_0_and_names_the_newest_file_when_logs_dir_is_set() {
         )),
         "{stdout}"
     );
-    assert!(stdout.contains("scale:     32 (--scale flag)"), "{stdout}");
+    assert!(stdout.contains("scale:     32 (factor, --scale flag)"), "{stdout}");
+}
+
+#[test]
+fn doctor_prints_an_outputs_line() {
+    // Which names it prints -- or whether it says "no Wayland display" -- is
+    // machine- and environment-dependent (the scratch `XDG_RUNTIME_DIR` hides
+    // a real compositor's socket the same way it hides a real daemon's), so
+    // this only checks the line is there, exactly as the `backend:` line's
+    // own tests do not pin the detected backend.
+    let s = scratch("doctor-outputs");
+    let out = s.command(&wisp()).arg("doctor").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("outputs:   "), "{stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// hud
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hud_list_prints_the_default_layout_when_there_is_no_config() {
+    let s = scratch("hud-list-default");
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "0  meter  damage  fight   top-left        20   120  w290 rows8",
+            "1  timers -       -       top-right       20   120  w330 rows12",
+            "scale 1",
+            "chord ctrl+shift+grave",
+            "output auto",
+        ],
+        "{stdout}"
+    );
+    // No config file was written: a read-only verb creates nothing.
+    assert!(!s.config_file().exists());
+
+    // `wisp hud list` is the same report as bare `wisp hud`.
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), stdout);
+}
+
+#[test]
+fn hud_place_then_nudge_then_list() {
+    let s = scratch("hud-place-nudge");
+    let out = s.command(&wisp()).args(["hud", "place", "1", "bottom-right", "20", "20"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", s.config_file().display()),
+        "it prints the path it wrote"
+    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("anchor = \"bottom-right\""), "{written}");
+
+    let out = s.command(&wisp()).args(["hud", "nudge", "1", "-10", "5"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("1  timers -       -       bottom-right    10    25  w330 rows12"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn hud_set_shows_and_hidden() {
+    let s = scratch("hud-set");
+    let out = s.command(&wisp()).args(["hud", "set", "0", "shows", "healing"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = s.command(&wisp()).args(["hud", "set", "0", "hidden", "true"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("0  meter  healing fight   top-left        20   120  w290 rows8 hidden"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn hud_add_and_remove() {
+    let s = scratch("hud-add-remove");
+    let out = s.command(&wisp()).args(["hud", "add", "meter"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let count = |s: &Scratch| {
+        let out = s.command(&wisp()).arg("hud").output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .count()
+    };
+    assert_eq!(count(&s), 3, "the default two plus the one just added");
+
+    let out = s.command(&wisp()).args(["hud", "remove", "2"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(count(&s), 2);
+}
+
+#[test]
+fn hud_rejects_a_bad_index_and_a_bad_key_with_exit_2() {
+    let s = scratch("hud-bad-index-and-key");
+    let out = s.command(&wisp()).args(["hud", "set", "5", "shows", "healing"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "wisp hud: no block 5 (have 2)\n"
+    );
+    assert!(!s.config_file().exists(), "a refusal is not a partial write");
+
+    let out = s.command(&wisp()).args(["hud", "set", "0", "shows", "nonsense"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "block keys: shows (damage|healing), segment (fight|session), width, rows, hidden (true|false)\n"
+    );
+    assert!(!s.config_file().exists());
+}
+
+/// A config whose layout does not parse: one mistyped anchor word in the
+/// first of two blocks, everything else valid. `Config::parse` keeps the
+/// *default* layout for it, so any writer that carried on would replace all
+/// of this with two default blocks.
+const MISTYPED_ANCHOR: &str = "log = \"/home/me/eqlog.txt\"\n\n[hud]\nscale = 1.0\n\n[[block]]\nkind = \"meter\"\nanchor = \"bottm-left\"\noffset = [11, 22]\nwidth = 500\nrows = 3\n\n[[block]]\nkind = \"timers\"\nanchor = \"top-right\"\noffset = [33, 44]\n";
+
+#[test]
+fn a_writer_refuses_a_layout_it_could_not_read_and_leaves_the_file_alone() {
+    // The whole point: `hud nudge` used to exit 0 here and leave the file
+    // holding the two *default* blocks -- width 500, rows 3 and both offsets
+    // gone, with nothing on stderr. Same for `config set`, which does not
+    // even claim to be touching the layout.
+    for verb in [vec!["hud", "nudge", "0", "100", "0"], vec!["config", "set", "backend", "gamescope"]] {
+        let s = scratch(&format!("refuse-bad-layout-{}", verb[0]));
+        s.write_config(MISTYPED_ANCHOR);
+        let out = s.command(&wisp()).args(&verb).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(2), "{verb:?}: {stderr}");
+        assert!(stderr.contains("config: [[block]] 0:"), "{verb:?} names the block: {stderr}");
+        assert!(stderr.contains("anchor"), "{verb:?} names the key: {stderr}");
+        assert!(String::from_utf8_lossy(&out.stdout).is_empty(), "{verb:?} printed a path it did not write");
+        assert_eq!(
+            fs::read_to_string(s.config_file()).unwrap(),
+            MISTYPED_ANCHOR,
+            "{verb:?} left the file byte for byte as it was"
+        );
+    }
+}
+
+#[test]
+fn hud_list_refuses_a_layout_it_could_not_read_rather_than_printing_the_default() {
+    // Reading is as bad as writing here: printing the default two blocks with
+    // nothing on stderr shows the user a layout that is not theirs and gives
+    // them no hint why.
+    let s = scratch("hud-list-bad-layout");
+    s.write_config(MISTYPED_ANCHOR);
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty(), "it listed something");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("config: [[block]] 0:"), "{stderr}");
+}
+
+#[test]
+fn config_set_refuses_a_non_finite_scale_with_exit_2() {
+    // `scale = NaN` is not TOML -- Rust spells it `NaN`, TOML spells it `nan`
+    // -- so writing it cost the whole file on the next read: every layout key
+    // reported unknown, `log` carrying its own quote characters, the scale
+    // read back as 0.08.
+    let s = scratch("config-set-nan");
+    s.write_config("log = \"/a\"\n");
+    for bad in ["NaN", "nan", "inf", "-inf"] {
+        let out = s.command(&wisp()).args(["config", "set", "scale", bad]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("is not a scale"),
+            "{bad}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(fs::read_to_string(s.config_file()).unwrap(), "log = \"/a\"\n", "{bad}: the file changed");
+    }
+    // A value that is not a number at all is still written: `Key::Scale` keeps
+    // it as text so the HUD can refuse it and blame the file, which is what
+    // `wisp doctor` reports on.
+    let out = s.command(&wisp()).args(["config", "set", "scale", "not-a-number"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(fs::read_to_string(s.config_file()).unwrap().contains("scale = \"not-a-number\""));
+}
+
+#[test]
+fn an_unknown_top_level_key_survives_a_round_trip_through_config_set() {
+    // Re-emitted after `[[block]]` it became a field of the last block, where
+    // serde dropped it; and a name that collides with one of `Block`'s own
+    // (`kind`) made the document a duplicate-key error, which sent the whole
+    // file down the Spec 4 legacy grammar.
+    let s = scratch("config-set-unknown-top-level");
+    s.write_config("log = \"/x\"\nnonsense = 5\nkind = \"banana\"\n\n[[block]]\nkind = \"meter\"\nanchor = \"top-left\"\noffset = [7, 9]\n");
+    let out = s.command(&wisp()).args(["config", "set", "backend", "plain"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    let hud_at = written.find("[hud]").expect("a layout was written");
+    for key in ["nonsense", "kind = \"banana\""] {
+        let at = written.find(key).unwrap_or_else(|| panic!("{key} was dropped: {written}"));
+        assert!(at < hud_at, "{key} must stay above the first table header: {written}");
+    }
+
+    // Still reported as unknown, and the log did not grow quote characters.
+    let out = s.command(&wisp()).args(["config", "show"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("log = /x\n"), "{stdout}");
+    assert!(stdout.contains("# unknown: "), "{stdout}");
+    for key in ["nonsense", "kind"] {
+        assert!(stdout.contains(key), "{key} is no longer reported: {stdout}");
+    }
+
+    // And the block kept its own `kind`, with one and only one of them.
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{listed}");
+    assert!(listed.contains("0  meter"), "{listed}");
+    assert!(listed.contains("     7     9"), "{listed}");
+}
+
+#[test]
+fn hud_scale_writes_hud_scale() {
+    let s = scratch("hud-scale");
+    let out = s.command(&wisp()).args(["hud", "scale", "1.5"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("[hud]\nscale = 1.5\n"), "{written}");
+
+    // Not a positive number: refused before anything is written.
+    let out = s.command(&wisp()).args(["hud", "scale", "0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = s.command(&wisp()).args(["hud", "scale", "-1"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn hud_output_writes_hud_output_and_auto_clears_it() {
+    let s = scratch("hud-output");
+    let out = s.command(&wisp()).args(["hud", "output", "DP-1"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("\noutput = \"DP-1\"\n"), "{written}");
+
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.lines().any(|line| line == "output DP-1"), "{stdout}");
+
+    // `auto` hands the choice back to the compositor: the key is gone, not
+    // written as the word.
+    let out = s.command(&wisp()).args(["hud", "output", "auto"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(!written.contains("output"), "{written}");
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.lines().any(|line| line == "output auto"), "{stdout}");
+
+    // No name at all: usage, exit 2, nothing written.
+    let before = fs::read_to_string(s.config_file()).unwrap();
+    let out = s.command(&wisp()).args(["hud", "output", ""]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(s.config_file()).unwrap(), before);
 }
 
 // ---------------------------------------------------------------------------
@@ -837,9 +1121,9 @@ fn bare_wisp_and_an_unknown_command_are_usage_with_exit_2() {
         // two independent HUD flags, so the usage must not offer any of them as
         // a choice between the flags beside it.
         assert!(stderr.contains("[--log <path> | --logs-dir <dir>] [--spells <dir>]"), "{stderr}");
-        assert!(stderr.contains("[--scale <px>] [--backend <name>]"), "{stderr}");
+        assert!(stderr.contains("[--scale <factor>] [--backend <name>]"), "{stderr}");
         // Usage names every command, so the dump is the documentation it is.
-        for command in ["run", "status", "doctor", "config", "version"] {
+        for command in ["run", "status", "doctor", "config", "hud", "version"] {
             assert!(stderr.contains(command), "{argv:?}: {stderr}");
         }
     }
