@@ -129,7 +129,7 @@ mod tests {
             let (mut sock, _) = listener.accept().unwrap();
             for seq in 1..=3 {
                 let line = format!(
-                    r#"{{"v":3,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
+                    r#"{{"v":4,"seq":{seq},"ts":"t","lines_ingested":{},"session_kills":{seq}}}"#,
                     seq * 10
                 );
                 sock.write_all(line.as_bytes()).unwrap();
@@ -217,7 +217,7 @@ mod tests {
             // behaviour `wisp-hud` depends on.
             std::thread::sleep(std::time::Duration::from_millis(50));
             let _ = sock.write_all(
-                b"{\"v\":3,\"seq\":1,\"ts\":\"t\",\"lines_ingested\":0,\"session_kills\":0}\n",
+                b"{\"v\":4,\"seq\":1,\"ts\":\"t\",\"lines_ingested\":0,\"session_kills\":0}\n",
             );
         });
 

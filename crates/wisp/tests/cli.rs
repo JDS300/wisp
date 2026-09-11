@@ -429,7 +429,7 @@ fn version_prints_wisp_and_the_crate_version() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn status_json_against_a_stub_daemon_is_one_v3_line() {
+fn status_json_against_a_stub_daemon_is_one_v4_line() {
     let s = scratch("status-json");
     let _daemon = s.stub_daemon();
 
@@ -439,7 +439,7 @@ fn status_json_against_a_stub_daemon_is_one_v3_line() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "one snapshot, one line: {stdout}");
     let snapshot = wisp_proto::decode(lines[0]).expect("a line the codec accepts");
-    assert_eq!(snapshot.v, 3);
+    assert_eq!(snapshot.v, 4);
     assert_eq!(snapshot.v, wisp_proto::PROTOCOL_VERSION);
 
     // The text form of the same daemon names the fields rather than the JSON.

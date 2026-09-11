@@ -12,14 +12,68 @@ use std::fmt;
 
 /// Bumped whenever the snapshot shape changes incompatibly.
 /// 1: Spec 1 counters. 2: Spec 2 adds `timers`. 3: Spec 3 adds `encounter`.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: Spec 5 adds the `slow` kind and `damage_type` on a `dot`.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TimerKind {
     Mez,
+    Slow,
     Dot,
     Debuff,
+}
+
+/// The client's resist type (field 29 of `spells_us.txt`), reported on a `dot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DamageType {
+    Unresistable,
+    Magic,
+    Fire,
+    Cold,
+    Poison,
+    Disease,
+    Chromatic,
+    Prismatic,
+    Physical,
+    Corruption,
+}
+
+impl DamageType {
+    /// 0 unresistable, 1 magic, 2 fire, 3 cold, 4 poison, 5 disease, 6 chromatic,
+    /// 7 prismatic, 8 physical, 9 corruption. Anything else is unresistable:
+    /// a code the client added later is still a DoT, just one without a colour.
+    pub fn from_resist_type(code: i64) -> DamageType {
+        match code {
+            1 => DamageType::Magic,
+            2 => DamageType::Fire,
+            3 => DamageType::Cold,
+            4 => DamageType::Poison,
+            5 => DamageType::Disease,
+            6 => DamageType::Chromatic,
+            7 => DamageType::Prismatic,
+            8 => DamageType::Physical,
+            9 => DamageType::Corruption,
+            _ => DamageType::Unresistable,
+        }
+    }
+
+    /// The lowercase wire word, for the HUD's kind label and `wisp status`.
+    pub fn name(self) -> &'static str {
+        match self {
+            DamageType::Unresistable => "unresistable",
+            DamageType::Magic => "magic",
+            DamageType::Fire => "fire",
+            DamageType::Cold => "cold",
+            DamageType::Poison => "poison",
+            DamageType::Disease => "disease",
+            DamageType::Chromatic => "chromatic",
+            DamageType::Prismatic => "prismatic",
+            DamageType::Physical => "physical",
+            DamageType::Corruption => "corruption",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +95,9 @@ pub struct Timer {
     /// 0 when the cast line carried no numeral.
     pub rank: u8,
     pub kind: TimerKind,
+    /// Present only when `kind == Dot`. Absent on the wire otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<DamageType>,
     /// May be negative during the post-expiry hold.
     pub remaining_ms: i64,
     pub duration_ms: u64,
@@ -196,7 +253,7 @@ mod tests {
 
     #[test]
     fn a_missing_encounter_decodes_as_none_and_none_encodes_as_null() {
-        let line = r#"{"v":3,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
+        let line = r#"{"v":4,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
         assert_eq!(decode(line).unwrap().encounter, None);
         assert!(encode(&sample()).contains(r#""encounter":null"#));
     }
@@ -205,7 +262,7 @@ mod tests {
     fn a_v2_line_is_refused_by_version() {
         let v2 = r#"{"v":2,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
         match decode(v2) {
-            Err(ProtoError::Version { found: 2, expected: 3 }) => {}
+            Err(ProtoError::Version { found: 2, expected: 4 }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }
@@ -216,6 +273,7 @@ mod tests {
             spell: "Mesmerization".to_string(),
             rank: 6,
             kind: TimerKind::Mez,
+            damage_type: None,
             remaining_ms: 11_800,
             duration_ms: 38_000,
             confidence: Confidence::Measured,
@@ -239,10 +297,51 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_carries_its_damage_type_and_a_mez_carries_none() {
+        let mut dot = mez();
+        dot.spell = "Envenomed Bolt".to_string();
+        dot.kind = TimerKind::Dot;
+        dot.damage_type = Some(DamageType::Poison);
+        let mut s = sample();
+        s.timers = vec![dot, mez()];
+        let line = encode(&s);
+        assert!(line.contains(r#""kind":"dot","damage_type":"poison""#), "{line}");
+        assert_eq!(line.matches("damage_type").count(), 1, "the mez has no key at all: {line}");
+        let back = decode(&line).unwrap();
+        assert_eq!(back.timers[0].damage_type, Some(DamageType::Poison));
+        assert_eq!(back.timers[1].damage_type, None);
+    }
+
+    #[test]
+    fn a_v4_line_without_the_field_decodes_to_none_and_v3_is_refused() {
+        let line = r#"{"v":4,"seq":1,"ts":"","lines_ingested":0,"session_kills":0,"timers":[{"target":"a rat","spell":"Slow","rank":0,"kind":"slow","remaining_ms":1000,"duration_ms":2000,"confidence":"measured"}]}"#;
+        let s = decode(line).unwrap();
+        assert_eq!(s.timers[0].kind, TimerKind::Slow);
+        assert_eq!(s.timers[0].damage_type, None);
+        let v3 = line.replacen(r#""v":4"#, r#""v":3"#, 1);
+        assert!(matches!(decode(&v3), Err(ProtoError::Version { found: 3, expected: 4 })));
+    }
+
+    #[test]
+    fn resist_type_codes_map_to_damage_types() {
+        assert_eq!(DamageType::from_resist_type(0), DamageType::Unresistable);
+        assert_eq!(DamageType::from_resist_type(1), DamageType::Magic);
+        assert_eq!(DamageType::from_resist_type(4), DamageType::Poison);
+        assert_eq!(DamageType::from_resist_type(5), DamageType::Disease);
+        assert_eq!(DamageType::from_resist_type(9), DamageType::Corruption);
+        assert_eq!(DamageType::from_resist_type(42), DamageType::Unresistable);
+        assert_eq!(DamageType::from_resist_type(-1), DamageType::Unresistable);
+        for (t, word) in [(DamageType::Magic, "magic"), (DamageType::Corruption, "corruption"), (DamageType::Unresistable, "unresistable")] {
+            assert_eq!(t.name(), word);
+            assert_eq!(serde_json::to_string(&t).unwrap(), format!("\"{word}\""));
+        }
+    }
+
+    #[test]
     fn a_v1_line_is_refused_by_version_not_by_shape() {
         let v1 = r#"{"v":1,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0}"#;
         match decode(v1) {
-            Err(ProtoError::Version { found: 1, expected: 3 }) => {}
+            Err(ProtoError::Version { found: 1, expected: 4 }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }

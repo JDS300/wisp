@@ -25,6 +25,7 @@ pub struct TrackerStats {
     pub pending_expired: u64,
     pub armed: u64,
     pub armed_mez: u64,
+    pub armed_slow: u64,
     pub armed_dot: u64,
     pub armed_debuff: u64,
     pub promoted_to_dot: u64,
@@ -199,6 +200,8 @@ impl Tracker {
                 spell: a.spell.clone(),
                 rank: a.rank,
                 kind: a.kind,
+                // Task 2 fills this in from the client's resist-type field.
+                damage_type: None,
                 remaining_ms: ((a.expiry() as f64 - now_secs) * 1000.0).round() as i64,
                 duration_ms: a.duration_s as u64 * 1000,
                 confidence: if a.measured { Confidence::Measured } else { Confidence::Estimated },
@@ -270,6 +273,7 @@ impl Tracker {
         self.stats.armed += 1;
         match kind {
             TimerKind::Mez => self.stats.armed_mez += 1,
+            TimerKind::Slow => self.stats.armed_slow += 1,
             TimerKind::Dot => self.stats.armed_dot += 1,
             TimerKind::Debuff => self.stats.armed_debuff += 1,
         }
@@ -703,6 +707,7 @@ mod tests {
                 pending_expired: 399,
                 armed: 5972,
                 armed_mez: 822,
+                armed_slow: 0,
                 armed_dot: 214,
                 armed_debuff: 4936,
                 promoted_to_dot: 2097,

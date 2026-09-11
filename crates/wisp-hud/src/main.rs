@@ -351,6 +351,7 @@ mod tests {
             spell: "Mesmerization".to_string(),
             rank: 6,
             kind: TimerKind::Mez,
+            damage_type: None,
             remaining_ms,
             duration_ms: 38_000,
             confidence,

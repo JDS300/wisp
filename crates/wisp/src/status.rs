@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 use wisp_proto::client::connect;
-use wisp_proto::{encode, Confidence, Encounter, MeterRow, Snapshot, Timer};
+use wisp_proto::{encode, Confidence, Encounter, MeterRow, Snapshot, Timer, TimerKind};
 
 /// How long a connected socket is given to produce its first snapshot before
 /// `status` gives up. The same figure `wisp run` gives a daemon to start
@@ -127,12 +127,32 @@ fn timer_row(timer: &Timer) -> String {
     // a column would be the one place Wisp lies about a duration.
     let secs = timer.remaining_ms.div_euclid(1000);
     format!(
-        "  {:<20} {:<18} {:>2}s   {}",
+        "  {:<20} {:<18} {:>2}s   {}   {}",
         timer.target,
         spell,
         secs,
-        confidence(timer.confidence)
+        confidence(timer.confidence),
+        kind_label(timer)
     )
+}
+
+/// The wire's own lowercase kind word, e.g. `mez` or `dot`, plus the damage
+/// type in parentheses when the timer carries one.
+fn kind_label(timer: &Timer) -> String {
+    let word = kind_word(timer.kind);
+    match timer.damage_type {
+        Some(dt) => format!("{word} ({})", dt.name()),
+        None => word.to_string(),
+    }
+}
+
+fn kind_word(kind: TimerKind) -> &'static str {
+    match kind {
+        TimerKind::Mez => "mez",
+        TimerKind::Slow => "slow",
+        TimerKind::Dot => "dot",
+        TimerKind::Debuff => "debuff",
+    }
 }
 
 fn personal(e: &Encounter) -> String {
@@ -221,6 +241,7 @@ mod tests {
                     spell: "Mesmerization".to_string(),
                     rank: 6,
                     kind: TimerKind::Mez,
+                    damage_type: None,
                     remaining_ms: 12_000,
                     duration_ms: 38_000,
                     confidence: Confidence::Measured,
@@ -230,6 +251,7 @@ mod tests {
                     spell: "Pacify".to_string(),
                     rank: 5,
                     kind: TimerKind::Debuff,
+                    damage_type: None,
                     remaining_ms: 63_000,
                     duration_ms: 63_000,
                     confidence: Confidence::Estimated,
@@ -261,8 +283,8 @@ log time:  Mon Aug 10 20:39:54 2026
 lines:     10432
 kills:     7
 timers:    2
-  a jeering gargoyle   Mesmerization VI   12s   measured
-  Guard Drazden        Pacify V           63s   estimated
+  a jeering gargoyle   Mesmerization VI   12s   measured   mez
+  Guard Drazden        Pacify V           63s   estimated   debuff
 fight:     active, 0:42
   you      DPS 434   in 52/s   HPS 21   damage 18.2k   taken 2210   healed 900   overheal 120
   damage   Serenitee 12.0k 286/s
@@ -281,8 +303,19 @@ fight:     active, 0:42
         s.timers = vec![rankless];
         assert_eq!(
             text(&s).lines().nth(4).unwrap(),
-            "  a jeering gargoyle   Mesmerization      12s   measured"
+            "  a jeering gargoyle   Mesmerization      12s   measured   mez"
         );
+    }
+
+    #[test]
+    fn timer_row_shows_the_damage_type_only_when_present() {
+        let mut dot = snapshot().timers[0].clone();
+        dot.kind = TimerKind::Dot;
+        dot.damage_type = Some(wisp_proto::DamageType::Poison);
+        assert!(timer_row(&dot).contains("dot (poison)"), "{}", timer_row(&dot));
+
+        let mez = snapshot().timers[0].clone();
+        assert!(timer_row(&mez).ends_with("mez"), "{}", timer_row(&mez));
     }
 
     #[test]
