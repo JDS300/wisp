@@ -828,6 +828,110 @@ fn hud_rejects_a_bad_index_and_a_bad_key_with_exit_2() {
     assert!(!s.config_file().exists());
 }
 
+/// A config whose layout does not parse: one mistyped anchor word in the
+/// first of two blocks, everything else valid. `Config::parse` keeps the
+/// *default* layout for it, so any writer that carried on would replace all
+/// of this with two default blocks.
+const MISTYPED_ANCHOR: &str = "log = \"/home/me/eqlog.txt\"\n\n[hud]\nscale = 1.0\n\n[[block]]\nkind = \"meter\"\nanchor = \"bottm-left\"\noffset = [11, 22]\nwidth = 500\nrows = 3\n\n[[block]]\nkind = \"timers\"\nanchor = \"top-right\"\noffset = [33, 44]\n";
+
+#[test]
+fn a_writer_refuses_a_layout_it_could_not_read_and_leaves_the_file_alone() {
+    // The whole point: `hud nudge` used to exit 0 here and leave the file
+    // holding the two *default* blocks -- width 500, rows 3 and both offsets
+    // gone, with nothing on stderr. Same for `config set`, which does not
+    // even claim to be touching the layout.
+    for verb in [vec!["hud", "nudge", "0", "100", "0"], vec!["config", "set", "backend", "gamescope"]] {
+        let s = scratch(&format!("refuse-bad-layout-{}", verb[0]));
+        s.write_config(MISTYPED_ANCHOR);
+        let out = s.command(&wisp()).args(&verb).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(2), "{verb:?}: {stderr}");
+        assert!(stderr.contains("config: [[block]] 0:"), "{verb:?} names the block: {stderr}");
+        assert!(stderr.contains("anchor"), "{verb:?} names the key: {stderr}");
+        assert!(String::from_utf8_lossy(&out.stdout).is_empty(), "{verb:?} printed a path it did not write");
+        assert_eq!(
+            fs::read_to_string(s.config_file()).unwrap(),
+            MISTYPED_ANCHOR,
+            "{verb:?} left the file byte for byte as it was"
+        );
+    }
+}
+
+#[test]
+fn hud_list_refuses_a_layout_it_could_not_read_rather_than_printing_the_default() {
+    // Reading is as bad as writing here: printing the default two blocks with
+    // nothing on stderr shows the user a layout that is not theirs and gives
+    // them no hint why.
+    let s = scratch("hud-list-bad-layout");
+    s.write_config(MISTYPED_ANCHOR);
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty(), "it listed something");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("config: [[block]] 0:"), "{stderr}");
+}
+
+#[test]
+fn config_set_refuses_a_non_finite_scale_with_exit_2() {
+    // `scale = NaN` is not TOML -- Rust spells it `NaN`, TOML spells it `nan`
+    // -- so writing it cost the whole file on the next read: every layout key
+    // reported unknown, `log` carrying its own quote characters, the scale
+    // read back as 0.08.
+    let s = scratch("config-set-nan");
+    s.write_config("log = \"/a\"\n");
+    for bad in ["NaN", "nan", "inf", "-inf"] {
+        let out = s.command(&wisp()).args(["config", "set", "scale", bad]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("is not a scale"),
+            "{bad}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(fs::read_to_string(s.config_file()).unwrap(), "log = \"/a\"\n", "{bad}: the file changed");
+    }
+    // A value that is not a number at all is still written: `Key::Scale` keeps
+    // it as text so the HUD can refuse it and blame the file, which is what
+    // `wisp doctor` reports on.
+    let out = s.command(&wisp()).args(["config", "set", "scale", "not-a-number"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(fs::read_to_string(s.config_file()).unwrap().contains("scale = \"not-a-number\""));
+}
+
+#[test]
+fn an_unknown_top_level_key_survives_a_round_trip_through_config_set() {
+    // Re-emitted after `[[block]]` it became a field of the last block, where
+    // serde dropped it; and a name that collides with one of `Block`'s own
+    // (`kind`) made the document a duplicate-key error, which sent the whole
+    // file down the Spec 4 legacy grammar.
+    let s = scratch("config-set-unknown-top-level");
+    s.write_config("log = \"/x\"\nnonsense = 5\nkind = \"banana\"\n\n[[block]]\nkind = \"meter\"\nanchor = \"top-left\"\noffset = [7, 9]\n");
+    let out = s.command(&wisp()).args(["config", "set", "backend", "plain"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    let hud_at = written.find("[hud]").expect("a layout was written");
+    for key in ["nonsense", "kind = \"banana\""] {
+        let at = written.find(key).unwrap_or_else(|| panic!("{key} was dropped: {written}"));
+        assert!(at < hud_at, "{key} must stay above the first table header: {written}");
+    }
+
+    // Still reported as unknown, and the log did not grow quote characters.
+    let out = s.command(&wisp()).args(["config", "show"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("log = /x\n"), "{stdout}");
+    assert!(stdout.contains("# unknown: "), "{stdout}");
+    for key in ["nonsense", "kind"] {
+        assert!(stdout.contains(key), "{key} is no longer reported: {stdout}");
+    }
+
+    // And the block kept its own `kind`, with one and only one of them.
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{listed}");
+    assert!(listed.contains("0  meter"), "{listed}");
+    assert!(listed.contains("     7     9"), "{listed}");
+}
+
 #[test]
 fn hud_scale_writes_hud_scale() {
     let s = scratch("hud-scale");

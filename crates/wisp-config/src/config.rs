@@ -10,10 +10,17 @@
 //! file is not preserved, and that loss is accepted by the spec in exchange
 //! for one writer that both `wisp config set` and the HUD's own save (a
 //! later task) can share.
+//!
+//! Because that regeneration is lossy by construction, no writer calls
+//! `to_toml` directly: [`Config::to_toml_checked`] reads its own output back
+//! and refuses to hand over text that did not come back as the config it was
+//! given. A full regeneration with no post-condition is how a mistyped anchor
+//! or a stray top-level key turned into a silently deleted layout.
 
 use crate::layout::{Block, Hud, Layout};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -77,6 +84,74 @@ enum UnknownValue {
     /// a quoted string.
     Text(String),
 }
+
+impl UnknownValue {
+    /// The value as TOML would carry it. Legacy text has only ever been text,
+    /// so it re-emits as a string.
+    fn as_toml(&self) -> toml::Value {
+        match self {
+            UnknownValue::Toml(value) => value.clone(),
+            UnknownValue::Text(text) => toml::Value::String(text.clone()),
+        }
+    }
+
+    /// Whether TOML writes this value under a header of its own
+    /// (`[name]`/`[[name]]`) rather than as a bare `name = value` line. It
+    /// decides *where* in the file the entry is re-emitted: a bare key has to
+    /// go before the first table header or the next read swallows it into
+    /// that table, while a table has to go after the blocks or it would
+    /// swallow them.
+    fn needs_own_header(&self) -> bool {
+        match self.as_toml() {
+            toml::Value::Table(_) => true,
+            toml::Value::Array(items) => !items.is_empty() && items.iter().all(|item| item.is_table()),
+            _ => false,
+        }
+    }
+
+    /// `name = value`, or the whole `[name]` section, as a TOML document
+    /// fragment. Serialized by the `toml` crate rather than formatted here,
+    /// so a name that needs quoting gets it and a nested table keeps its full
+    /// dotted path.
+    fn to_toml_entry(&self, name: &str) -> String {
+        let mut doc = toml::Table::new();
+        doc.insert(name.to_string(), self.as_toml());
+        match toml::to_string(&doc) {
+            Ok(text) => text,
+            // Not reachable for anything `Config::parse` can produce; the
+            // round-trip guard in `to_toml_checked` catches it if it ever is.
+            Err(_) => format!("{name} = {}\n", self.as_toml()),
+        }
+    }
+}
+
+/// Why a write was refused.
+///
+/// Not a parse error — [`Config::parse`] never fails — but a post-condition
+/// on [`Config::to_toml`]: what comes out has to read back as the config that
+/// went in. Reaching one of these means Wisp generated a file it cannot read,
+/// which is Wisp's bug rather than a mistake in the user's file, and the
+/// message says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// `Config::parse(&to_toml())` is not the config it was meant to be. The
+    /// text names the part that differed.
+    NotRoundTrip(String),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::NotRoundTrip(detail) => write!(
+                f,
+                "the regenerated config did not round-trip ({detail}); \
+                 this is a bug in Wisp rather than a mistake in the file, so nothing was written"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 /// The `[hud]` table read leniently: `scale` is kept as a raw [`toml::Value`]
 /// rather than `f32`, because an invalid scale (a string, say) must reach
@@ -215,10 +290,23 @@ impl Config {
         self.values.insert(key, value.to_string());
     }
 
-    /// The whole file as TOML: the four keys (where set), `[hud]`, every
-    /// `[[block]]`, then any unknown top-level entries re-emitted so a typo
-    /// is not silently dropped. A legacy top-level `scale` is not re-emitted;
-    /// it became `hud.scale`.
+    /// The whole file as TOML: the four keys and every unknown *bare* key
+    /// (where set), then `[hud]`, every `[[block]]`, and last any unknown
+    /// entry that is a table of its own. A legacy top-level `scale` is not
+    /// re-emitted; it became `hud.scale`.
+    ///
+    /// The unknown bare keys go *before* the first table header deliberately.
+    /// In TOML a bare key written after `[hud]` or `[[block]]` belongs to
+    /// that table, so re-emitting a top-level key after them moves it into
+    /// the last block on the next read — where serde drops it silently, or,
+    /// when its name collides with one of `Block`'s own fields, makes the
+    /// document a duplicate-key error and sends the whole file down the
+    /// legacy fallback with every layout key reported unknown. The
+    /// re-emission exists so a typo is not dropped; emitted in the wrong
+    /// place it dropped the typo and the file with it.
+    ///
+    /// Prefer [`Config::to_toml_checked`] for anything that actually writes:
+    /// this is a full regeneration with no post-condition of its own.
     pub fn to_toml(&self) -> String {
         let mut out = String::new();
         for key in [Key::Log, Key::LogsDir, Key::SpellsDir, Key::Backend] {
@@ -226,15 +314,84 @@ impl Config {
                 out.push_str(&format!("{} = {}\n", key.name(), quote(value)));
             }
         }
+        for (name, value) in &self.unknown_values {
+            if !value.needs_own_header() {
+                out.push_str(&value.to_toml_entry(name));
+            }
+        }
         out.push('\n');
         out.push_str(&self.layout_toml());
         for (name, value) in &self.unknown_values {
-            match value {
-                UnknownValue::Toml(v) => out.push_str(&format!("{name} = {v}\n")),
-                UnknownValue::Text(text) => out.push_str(&format!("{name} = {}\n", quote(text))),
+            if value.needs_own_header() {
+                out.push('\n');
+                out.push_str(&value.to_toml_entry(name));
             }
         }
         out
+    }
+
+    /// [`Config::to_toml`]'s output, having first read it back and checked
+    /// that it says the same thing — the post-condition every writer needs
+    /// and none of them can state for itself.
+    ///
+    /// `to_toml` regenerates the whole file from the parsed model, so any
+    /// hole in either half of that round trip loses part of the user's file
+    /// rather than one key: a layout the writer emits in a shape the reader
+    /// will not accept, an unknown key that lands somewhere the reader will
+    /// not look, a float with no TOML spelling. Checked here once, in the
+    /// crate that owns both halves, so `wisp config set`, `wisp hud` and the
+    /// HUD's own save cannot each get it differently right.
+    ///
+    /// What must match: the four path/backend keys as written, the layout's
+    /// blocks, chord and output, the `[hud] scale` *as the file spells it*,
+    /// and the set of unknown key names. Not the layout's `scale` float:
+    /// converting Spec 4's pixel size reports two decimals
+    /// (`Config::converted_scale`), and the two-decimal text is what every
+    /// reader of the file then uses, so `48 / 13.0` legitimately writes back
+    /// as `3.69`.
+    pub fn to_toml_checked(&self) -> Result<String, ConfigError> {
+        let text = self.to_toml();
+        let back = Config::parse(&text);
+        let refuse = |detail: &str| Err(ConfigError::NotRoundTrip(detail.to_string()));
+
+        if let Some(e) = back.layout_error() {
+            return refuse(&format!("the layout it wrote does not read back: {e}"));
+        }
+        for key in [Key::Log, Key::LogsDir, Key::SpellsDir, Key::Backend] {
+            if back.get(key) != self.get(key) {
+                return refuse(&format!("{} read back as {:?}", key.name(), back.get(key)));
+            }
+        }
+        if back.layout.blocks != self.layout.blocks {
+            return refuse("the blocks read back are not the ones written");
+        }
+        if back.layout.hud.chord != self.layout.hud.chord {
+            return refuse("hud.chord read back as something else");
+        }
+        if back.layout.hud.output != self.layout.hud.output {
+            return refuse("hud.output read back as something else");
+        }
+        if back.scale_toml() != self.scale_toml() {
+            return refuse(&format!("hud.scale read back as {}", back.scale_toml()));
+        }
+        if back.unknown_key_names() != self.unknown_key_names() {
+            return refuse(&format!(
+                "unknown keys {:?} read back as {:?}",
+                self.unknown_key_names(),
+                back.unknown_key_names()
+            ));
+        }
+        Ok(text)
+    }
+
+    /// Every unknown name once, sorted: what the round-trip guard compares,
+    /// since the legacy grammar keeps them in the order the file listed them
+    /// and a TOML document sorts them.
+    fn unknown_key_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.unknown_values.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 
     /// `[hud]` plus every `[[block]]`, in the shape `to_toml` appends after
@@ -356,16 +513,41 @@ impl Config {
             None => None,
         };
 
+        // Deserialized one entry at a time rather than as a `Vec<Block>`, so
+        // the message can name the block that is wrong. Once a writer refuses
+        // to rewrite a layout it could not read, this message is the only
+        // thing the user has to find the bad key with, and "unknown variant
+        // `bottm-left`" in a file with six blocks is not enough to act on.
         let blocks: Option<Vec<Block>> = match block_entry {
-            Some(value) => match Vec::<Block>::deserialize(value) {
-                Ok(blocks) => Some(blocks),
-                Err(e) => {
-                    if layout_error.is_none() {
-                        layout_error = Some(e.to_string());
+            Some(toml::Value::Array(items)) => {
+                let mut parsed = Vec::with_capacity(items.len());
+                let mut failed = false;
+                for (index, item) in items.into_iter().enumerate() {
+                    match Block::deserialize(item) {
+                        Ok(block) => parsed.push(block),
+                        Err(e) => {
+                            if layout_error.is_none() {
+                                layout_error = Some(format!("[[block]] {index}: {e}"));
+                            }
+                            failed = true;
+                            break;
+                        }
                     }
-                    None
                 }
-            },
+                if failed {
+                    None
+                } else {
+                    Some(parsed)
+                }
+            }
+            // `block` written as something other than an array of tables:
+            // one message for the whole key, since there is no index to name.
+            Some(other) => {
+                if layout_error.is_none() {
+                    layout_error = Some(format!("block: expected an array of [[block]] tables, found {}", other.type_str()));
+                }
+                None
+            }
             None => None,
         };
 
@@ -480,22 +662,54 @@ fn quote(s: &str) -> String {
 /// `f` as a TOML float literal: TOML requires a fractional part or exponent,
 /// so a whole number gets `.0` appended (Rust's own `Display` would print
 /// `1` for `1.0`).
+///
+/// The non-finite arm exists only so this function cannot produce text that
+/// is not TOML at all: Rust spells them `NaN`, `inf` and `-inf`, and TOML
+/// spells them `nan`, `inf` and `-inf`, so `NaN` written verbatim made the
+/// whole file unreadable on the next open — every key reported unknown, the
+/// paths carrying their own quote characters, the layout gone. No caller
+/// should reach it: [`is_valid_scale`] is the one check `wisp config set
+/// scale` and `wisp hud scale` share, and it refuses a non-finite value
+/// before it can be stored.
 fn fmt_f32(f: f32) -> String {
+    if f.is_nan() {
+        return "nan".to_string();
+    }
+    if f.is_infinite() {
+        return if f.is_sign_negative() { "-inf".to_string() } else { "inf".to_string() };
+    }
     let text = format!("{f}");
-    if text.contains(['.', 'e', 'E']) || text.contains("inf") || text.contains("NaN") {
+    if text.contains(['.', 'e', 'E']) {
         text
     } else {
         format!("{text}.0")
     }
 }
 
+/// Whether `factor` is a scale the HUD can render at: finite and greater than
+/// zero.
+///
+/// One function rather than a check per entry point. `wisp hud scale` had
+/// `factor > 0.0`, which refuses `NaN` (every comparison with it is false)
+/// but accepts `inf`; `wisp config set scale` had no check at all and wrote
+/// `scale = NaN`, which is not valid TOML and cost the user the rest of the
+/// file on the next read. Both now ask here.
+pub fn is_valid_scale(factor: f32) -> bool {
+    factor.is_finite() && factor > 0.0
+}
+
 /// `text` with `key` set to `value`: `Config::parse(text)` → `set` →
-/// `to_toml()`. Kept for the CLI, which reads and writes whole files rather
-/// than holding a `Config` open across the two.
-pub fn set_in_text(text: &str, key: Key, value: &str) -> String {
+/// [`Config::to_toml_checked`], for a caller that has the whole file as text
+/// rather than a `Config` open across the two.
+///
+/// Checked rather than raw: an unchecked one-call convenience beside a
+/// guarded writer is how a writer ends up unguarded. Note that it says
+/// nothing about `layout_error` — a caller that is *writing* must refuse that
+/// itself, with a message naming the block, before it ever gets here.
+pub fn set_in_text(text: &str, key: Key, value: &str) -> Result<String, ConfigError> {
     let mut config = Config::parse(text);
     config.set(key, value);
-    config.to_toml()
+    config.to_toml_checked()
 }
 
 #[cfg(test)]
@@ -660,7 +874,7 @@ mod tests {
     fn set_then_parse_reads_back_the_value_that_was_set() {
         for key in Key::ALL {
             let text = "# Wisp\nlog = /a\nscale = 1\n";
-            let out = set_in_text(text, key, "/set by the test");
+            let out = set_in_text(text, key, "/set by the test").unwrap();
             let c = Config::parse(&out);
             assert_eq!(c.get(key), Some("/set by the test"), "{}", key.name());
             assert_eq!(c.unknown(), &[] as &[String]);
@@ -669,7 +883,7 @@ mod tests {
         // duplicate — checked by parsing back rather than the exact text,
         // since `to_toml` regenerates the whole file rather than editing it
         // in place (Spec 5).
-        let out = set_in_text("log = /a\nlog = /b\n", Key::Log, "/c");
+        let out = set_in_text("log = /a\nlog = /b\n", Key::Log, "/c").unwrap();
         assert_eq!(Config::parse(&out).get(Key::Log), Some("/c"));
     }
 
@@ -747,7 +961,147 @@ mod tests {
         let mut c = Config::parse(&out);
         c.set(Key::Scale, "1.5");
         assert!(c.to_toml().contains("[hud]\nscale = 1.5\n"), "{}", c.to_toml());
-        let out = set_in_text("nonsense = 1\n", Key::Backend, "plain");
+        let out = set_in_text("nonsense = 1\n", Key::Backend, "plain").unwrap();
         assert!(out.contains("nonsense = ") && out.contains("backend = \"plain\""), "unknown keys are re-emitted: {out}");
+    }
+
+    // --- the round-trip guard, and the three ways regeneration lost a file ---
+
+    #[test]
+    fn an_unknown_bare_key_stays_top_level_across_a_round_trip() {
+        // Emitted after `[[block]]` it would be a field of the last block on
+        // the next read, where `Block`'s serde silently drops it: the
+        // re-emission that exists so a typo is not lost would lose it, one
+        // round trip later.
+        let text = "nonsense = 5\n\n[hud]\nscale = 1.0\n\n[[block]]\nkind = \"meter\"\nanchor = \"top-left\"\n\n[[block]]\nkind = \"timers\"\nanchor = \"top-right\"\n";
+        let c = Config::parse(text);
+        assert_eq!(c.unknown(), &["nonsense".to_string()]);
+
+        let out = c.to_toml_checked().expect("a document with an unknown key round-trips");
+        let key_at = out.find("nonsense").expect("the key is re-emitted");
+        let hud_at = out.find("[hud]").expect("the layout is written");
+        assert!(key_at < hud_at, "an unknown bare key goes before the first table header: {out}");
+
+        let again = Config::parse(&out);
+        assert_eq!(again.unknown(), &["nonsense".to_string()], "still a top-level key, still reported: {out}");
+        assert_eq!(again.layout().blocks.len(), 2);
+        assert_eq!(again.layout(), c.layout());
+    }
+
+    #[test]
+    fn a_top_level_key_named_like_a_block_field_does_not_become_the_blocks() {
+        // `kind` is one of `Block`'s own field names. Re-emitted after
+        // `[[block]]` it made a table with two `kind` keys, which is a
+        // duplicate-key error, which sent the whole document down the Spec 4
+        // legacy grammar: every layout key reported unknown, `log` carrying
+        // its own quote characters, the scale read as pixels.
+        let c = Config::parse("log = \"/x\"\nkind = \"banana\"\n\n[[block]]\nkind = \"meter\"\nanchor = \"top-left\"\n");
+        let out = c.to_toml_checked().expect("a top-level `kind` round-trips");
+
+        let again = Config::parse(&out);
+        assert_eq!(again.layout_error(), None, "{out}");
+        assert_eq!(again.get(Key::Log), Some("/x"), "the path did not grow quote characters: {out}");
+        assert_eq!(again.unknown(), &["kind".to_string()]);
+        assert_eq!(again.layout().blocks.len(), 1);
+        assert_eq!(again.layout().blocks[0].kind, crate::layout::BlockKind::Meter);
+    }
+
+    #[test]
+    fn a_legacy_unknown_key_is_re_emitted_as_a_quoted_string() {
+        // The legacy grammar has only ever had text, so `nonsense = 1` comes
+        // back as the string "1" rather than the integer 1 -- and as a
+        // *quoted* string, or the regenerated document would not be TOML.
+        // (`log /a` has no `=`, so the whole text is not valid TOML and this
+        // is the legacy path.)
+        let c = Config::parse("log /a\nnonsense = 1\nbackend = plain\n");
+        assert_eq!(c.unknown(), &["nonsense".to_string()]);
+        let out = c.to_toml_checked().expect("a legacy file round-trips");
+        assert!(out.contains("nonsense = \"1\"\n"), "{out}");
+
+        let again = Config::parse(&out);
+        assert_eq!(again.unknown(), &["nonsense".to_string()]);
+        assert_eq!(again.get(Key::Backend), Some("plain"));
+    }
+
+    #[test]
+    fn an_unknown_table_keeps_its_own_header_after_the_blocks() {
+        let c = Config::parse("[unknown_table]\na = 1\n");
+        assert_eq!(c.unknown(), &["unknown_table".to_string()]);
+        let out = c.to_toml_checked().expect("an unknown table round-trips");
+        assert!(out.contains("[unknown_table]\na = 1\n"), "{out}");
+        let block_at = out.find("[[block]]").expect("the layout is written");
+        assert!(block_at < out.find("[unknown_table]").unwrap(), "a table goes after the blocks: {out}");
+        assert_eq!(Config::parse(&out).unknown(), &["unknown_table".to_string()]);
+    }
+
+    #[test]
+    fn to_toml_checked_refuses_text_that_does_not_read_back() {
+        // `quote` escapes `"`, `\`, newline and tab, and nothing else, so a
+        // value carrying a bare carriage return is written as a basic string
+        // TOML will not accept -- which sends the next read down the legacy
+        // fallback and loses the layout. The point of the guard is that a
+        // hole like this one refuses the write instead of taking the file
+        // with it; the guard is the post-condition, not a list of the holes
+        // it knows about.
+        let mut c = Config::parse("");
+        c.set(Key::Log, "/a\rb");
+        let refused = c.to_toml_checked().expect_err("a value that is not TOML is refused");
+        let ConfigError::NotRoundTrip(detail) = &refused;
+        assert!(detail.contains("log") || detail.contains("layout"), "{detail}");
+        // The message says whose fault it is, because it is not the user's.
+        assert!(refused.to_string().contains("bug in Wisp"), "{refused}");
+        assert!(refused.to_string().contains("nothing was written"), "{refused}");
+    }
+
+    #[test]
+    fn to_toml_checked_accepts_a_converted_legacy_scale() {
+        // The one legitimate difference between what is written and what is
+        // read back: `48 / 13.0` is reported and re-emitted to two decimals,
+        // so the layout's own float is 3.6923 while the file says 3.69. The
+        // guard compares the scale as the file spells it for exactly this
+        // case -- it is the Spec 4 upgrade path, reached by any `wisp config
+        // set` against a file written before Spec 5.
+        let c = Config::parse("logs_dir = /a\nscale = 48\n");
+        let out = c.to_toml_checked().expect("a converted legacy scale is not a round-trip failure");
+        assert!(out.contains("[hud]\nscale = 3.69\n"), "{out}");
+    }
+
+    #[test]
+    fn every_layout_error_names_the_block_it_came_from() {
+        let c = Config::parse(
+            "[[block]]\nkind = \"meter\"\nanchor = \"top-left\"\n\n[[block]]\nkind = \"timers\"\nanchor = \"bottm-left\"\n",
+        );
+        let err = c.layout_error().expect("a mistyped anchor is a layout error");
+        assert!(err.starts_with("[[block]] 1: "), "{err}");
+        assert!(err.contains("anchor"), "{err}");
+
+        let c = Config::parse("block = 7\n");
+        let err = c.layout_error().expect("`block` that is not an array of tables is a layout error");
+        assert!(err.starts_with("block: "), "{err}");
+    }
+
+    #[test]
+    fn a_non_finite_scale_has_a_toml_spelling_and_is_not_a_valid_scale() {
+        // Rust prints `NaN`; TOML spells it `nan`, and `scale = NaN` is not a
+        // TOML document at all. No entry point should ever get here --
+        // `is_valid_scale` is the check both `wisp config set scale` and
+        // `wisp hud scale` make first -- but what this function emits is
+        // always readable TOML regardless.
+        assert_eq!(fmt_f32(f32::NAN), "nan");
+        assert_eq!(fmt_f32(f32::INFINITY), "inf");
+        assert_eq!(fmt_f32(f32::NEG_INFINITY), "-inf");
+        assert_eq!(fmt_f32(1.0), "1.0");
+        assert_eq!(fmt_f32(1.5), "1.5");
+        for text in ["nan", "inf", "-inf"] {
+            let doc = format!("[hud]\nscale = {text}\n");
+            assert!(toml::from_str::<toml::Table>(&doc).is_ok(), "{doc}");
+        }
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+            assert!(!is_valid_scale(bad), "{bad}");
+        }
+        for good in [0.5, 1.0, 1.5, 4.0] {
+            assert!(is_valid_scale(good), "{good}");
+        }
     }
 }

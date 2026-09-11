@@ -261,9 +261,15 @@ fn hud_command(args: &[OsString]) -> Command {
             Some(index) => Command::Hud(HudCommand::Remove { index }),
             None => invalid_hud(),
         },
+        // `is_valid_scale` rather than a `> 0.0` of its own: the same check
+        // `wisp config set scale` makes, in the crate that has to write the
+        // value afterwards. `> 0.0` refused `NaN` (every comparison with it
+        // is false) but let `inf` through.
         ("scale", [factor]) => match factor.to_str().and_then(|text| text.trim().parse::<f32>().ok())
         {
-            Some(factor) if factor > 0.0 => Command::Hud(HudCommand::Scale(factor)),
+            Some(factor) if wisp_config::config::is_valid_scale(factor) => {
+                Command::Hud(HudCommand::Scale(factor))
+            }
             _ => invalid_hud(),
         },
         _ => invalid_hud(),
@@ -670,7 +676,7 @@ mod tests {
     fn hud_scale_parses_a_positive_float() {
         assert_eq!(parse(&argv(&["wisp", "hud", "scale", "1.5"])), Command::Hud(HudCommand::Scale(1.5)));
         assert_eq!(parse(&argv(&["wisp", "hud", "scale", "2"])), Command::Hud(HudCommand::Scale(2.0)));
-        for bad in ["0", "-1", "not-a-number", ""] {
+        for bad in ["0", "-1", "not-a-number", "", "nan", "NaN", "inf", "-inf"] {
             assert!(
                 matches!(parse(&argv(&["wisp", "hud", "scale", bad])), Command::Hud(HudCommand::Invalid(_))),
                 "{bad}"

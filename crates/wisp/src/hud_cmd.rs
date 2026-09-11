@@ -3,9 +3,11 @@
 //!
 //! The HUD itself reloads the file live (a later task); this binary never
 //! talks to it. Every verb goes through the same three steps `wisp config
-//! set` uses -- load the text, edit the parsed model, `to_toml` and
+//! set` uses -- load the text, edit the parsed model, `to_toml_checked` and
 //! `write_atomic` it back -- so the HUD's own save and this command cannot
-//! drift into two writers of one file.
+//! drift into two writers of one file. The two refusals that make the write
+//! safe (a layout the file could not state, and text that does not read back
+//! as what it meant to say) are `config_cmd`'s, shared for the same reason.
 
 use std::fs;
 use std::io;
@@ -35,8 +37,17 @@ pub fn hud(command: HudCommand) -> i32 {
 /// The config file's layout, one line per block, then the two `[hud]`
 /// fields. A missing file is [`Layout::default_layout`], the same rule every
 /// reader of the config uses.
+///
+/// A layout that did not parse is the one case `list` refuses rather than
+/// reports: the fallback it would otherwise print is the default layout, not
+/// the user's, and printing someone else's two blocks as if they were theirs
+/// -- with nothing on stderr -- is worse than saying what is wrong with the
+/// file. Exit 2, the same code every editing verb gives the same file.
 fn list() -> i32 {
     let config = load_for_reading();
+    if let Some(code) = crate::config_cmd::refuse_unreadable_layout(&config) {
+        return code;
+    }
     let layout = config.layout();
     for (index, block) in layout.blocks.iter().enumerate() {
         println!("{}", block_line(index, block));
@@ -135,16 +146,26 @@ fn apply(command: HudCommand) -> i32 {
         Err(code) => return code,
     };
     let mut config = Config::parse(&existing);
+    // Before the edit, not after: a layout that did not parse has already
+    // fallen back to the default, so applying the verb would edit the default
+    // and write that over the user's blocks.
+    if let Some(code) = crate::config_cmd::refuse_unreadable_layout(&config) {
+        return code;
+    }
     if let Err(code) = edit(config.layout_mut(), command) {
         return code;
     }
+    let text = match crate::config_cmd::checked_toml(&config) {
+        Ok(text) => text,
+        Err(code) => return code,
+    };
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("wisp: cannot create {}: {e}", parent.display());
             return 1;
         }
     }
-    match write_atomic(&path, &config.to_toml()) {
+    match write_atomic(&path, &text) {
         Ok(()) => {
             println!("{}", path.display());
             0

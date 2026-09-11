@@ -401,7 +401,13 @@ fn save_layout(path: &Path, fallback: &Config, layout: &Layout) -> io::Result<Co
         }
     };
     fresh.layout_mut().clone_from(layout);
-    write_atomic(path, &fresh.to_toml())?;
+    // The same post-condition `wisp config set` and `wisp hud` write under:
+    // `to_toml` regenerates the whole file, so text that does not read back
+    // as this config would cost the user every key it did not mean to touch.
+    // A refusal here is one line on stderr and no write -- HUD mode's own
+    // placement is still on screen and the file is still whatever it was.
+    let text = fresh.to_toml_checked().map_err(io::Error::other)?;
+    write_atomic(path, &text)?;
     Ok(fresh)
 }
 
