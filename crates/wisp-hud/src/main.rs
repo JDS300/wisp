@@ -4,6 +4,12 @@ mod backend;
 #[allow(dead_code)] // Task 7 rewires the HUD onto this module; text.rs still draws it today.
 mod draw;
 mod text;
+#[allow(dead_code)] // Task 7 wires the HUD onto these modules; nothing calls into them yet.
+mod theme;
+#[allow(dead_code)]
+mod model;
+#[allow(dead_code)]
+mod paint;
 
 use backend::{OverlayBackend, Rect};
 use std::ffi::{OsStr, OsString};
