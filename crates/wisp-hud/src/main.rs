@@ -640,7 +640,14 @@ mod tests {
                 "wisp-hud: ignoring unknown config key: also_unknown".to_string(),
             ]
         );
-        assert_eq!(config.get(Key::Scale), Some("32"), "the keys Wisp does have are still read");
+        // A duplicate `nonsense` key makes this text invalid TOML, so it
+        // reads as the legacy grammar, whose `scale` is now Spec 5's
+        // converted multiplier (32 / 13), not the raw text Spec 4 read back.
+        assert_eq!(
+            config.get(Key::Scale),
+            Some("2.46"),
+            "the keys Wisp does have are still read"
+        );
         assert_eq!(config.get(Key::Backend), None);
         let _ = fs::remove_file(&path);
     }

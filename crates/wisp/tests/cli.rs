@@ -336,7 +336,12 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     // `config set` creates the directory the file lives in; nothing else does.
-    assert_eq!(fs::read_to_string(s.config_file()).unwrap(), format!("logs_dir = {value}\n"));
+    // The file is `to_toml()`'s output (Spec 5): a full regeneration from the
+    // model rather than a text edit, so this checks the one key's line and
+    // that the layout section is there, not the whole file byte for byte.
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with(&format!("logs_dir = \"{value}\"\n")), "{written}");
+    assert!(written.contains("[hud]"), "{written}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         format!("{}\n", s.config_file().display()),
@@ -345,11 +350,14 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
 
     let out = s.command(&wisp()).arg("config").arg("show").output().unwrap();
     let shown = String::from_utf8_lossy(&out.stdout).into_owned();
-    // Byte for byte: the value is everything after the first `=`, trimmed, so a
-    // path with spaces needs no quoting and survives the round trip whole.
+    // The path survives the round trip whole, spaces and all.
     assert!(shown.contains(&format!("logs_dir = {value}\n")), "{shown}");
     assert!(shown.contains("log = (unset)\n"), "{shown}");
-    assert!(shown.contains("scale = (unset)\n"), "{shown}");
+    // `scale` reads `[hud].scale`, and every write regenerates a `[hud]`
+    // table (Spec 5), so a key `config set` never touched is no longer
+    // `(unset)` the way a legacy-grammar key would be: it is the layout's
+    // own default.
+    assert!(shown.contains("scale = 1.0\n"), "{shown}");
 
     // Nothing but the config file: the write went through a temporary in the
     // same directory, and the rename took it away.
@@ -361,7 +369,11 @@ fn config_set_then_show_round_trips_a_path_with_spaces() {
 }
 
 #[test]
-fn config_set_preserves_a_comment() {
+fn config_set_regenerates_the_file_as_toml_and_drops_comments() {
+    // `to_toml()` is a full regeneration from the parsed model (Spec 5), not
+    // a text edit: a comment in the user's file is lost, and that is
+    // accepted by the spec so `wisp config set` and the HUD's own save can
+    // share one writer. The key the write did not touch survives.
     let s = scratch("config-set-comment");
     s.write_config("# Wisp\n# log = /commented-out\nlog = /a\n");
     let out = s
@@ -370,22 +382,20 @@ fn config_set_preserves_a_comment() {
         .output()
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(
-        fs::read_to_string(s.config_file()).unwrap(),
-        "# Wisp\n# log = /commented-out\nlog = /a\nscale = 32\n"
-    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with("log = \"/a\"\n\n[hud]\nscale = 32.0\n"), "{written}");
+    assert!(!written.contains("commented-out"), "{written}");
 
-    // Setting a key that is already there replaces its line and leaves the rest.
+    // Setting a key that is already there replaces its value, not the whole
+    // file: the previous `set` is kept.
     let out = s
         .command(&wisp())
         .args(["config", "set", "log", "/b"])
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(
-        fs::read_to_string(s.config_file()).unwrap(),
-        "# Wisp\n# log = /commented-out\nlog = /b\nscale = 32\n"
-    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.starts_with("log = \"/b\"\n\n[hud]\nscale = 32.0\n"), "{written}");
 }
 
 #[test]

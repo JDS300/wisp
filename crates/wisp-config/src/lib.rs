@@ -9,6 +9,8 @@
 
 pub mod config;
 pub mod discover;
+pub mod layout;
 pub mod paths;
 pub mod source;
 pub mod spells;
+pub mod write;
