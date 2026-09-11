@@ -446,7 +446,7 @@ mod tests {
     }
 
     fn snap(encounter: Option<Encounter>) -> Snapshot {
-        Snapshot { v: 4, seq: 1, ts: String::new(), lines_ingested: 0, session_kills: 7, timers: vec![], encounter }
+        Snapshot { v: 5, seq: 1, ts: String::new(), log: None, lines_ingested: 0, session_kills: 7, timers: vec![], encounter }
     }
 
     fn theme() -> Theme {

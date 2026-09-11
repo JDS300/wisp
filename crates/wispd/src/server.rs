@@ -107,6 +107,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             seq,
             ts: "Mon Aug 10 20:39:54 2026".to_string(),
+            log: None,
             lines_ingested: seq * 10,
             session_kills: kills,
             timers: Vec::new(),

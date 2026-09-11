@@ -31,7 +31,7 @@ use wisp_proto::{Snapshot, PROTOCOL_VERSION};
 /// yet: no kills, no timers, no fight. HUD mode can toggle before the first
 /// real snapshot arrives, and the layout still has to paint something.
 fn empty_snapshot() -> Snapshot {
-    Snapshot { v: PROTOCOL_VERSION, seq: 0, ts: String::new(), lines_ingested: 0, session_kills: 0, timers: Vec::new(), encounter: None }
+    Snapshot { v: PROTOCOL_VERSION, seq: 0, ts: String::new(), log: None, lines_ingested: 0, session_kills: 0, timers: Vec::new(), encounter: None }
 }
 
 /// HUD mode's arrow step, unscaled -- the theme's `nudge`/`shift_nudge` are

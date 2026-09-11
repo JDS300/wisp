@@ -288,6 +288,13 @@ fn main() -> std::io::Result<()> {
             v: PROTOCOL_VERSION,
             seq,
             ts: counters.last_ts.clone(),
+            // The name only: the socket is readable by the session and the path
+            // would say where the game is installed. `current` is None while a
+            // directory source is still waiting, and always None under --stub.
+            log: current
+                .as_deref()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned()),
             lines_ingested: counters.lines_ingested,
             session_kills: counters.session_kills,
             timers: timers_now,

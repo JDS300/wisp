@@ -331,6 +331,7 @@ fn a_directory_with_no_log_publishes_zero_counters_and_an_empty_ts() {
     assert_eq!(snapshot.v, PROTOCOL_VERSION);
     assert_eq!((snapshot.lines_ingested, snapshot.session_kills), (0, 0));
     assert!(snapshot.ts.is_empty(), "ts was {:?}", snapshot.ts);
+    assert_eq!(snapshot.log, None, "no file open, so no name to report");
     assert!(snapshot.timers.is_empty());
     assert!(snapshot.encounter.is_none());
 
@@ -366,6 +367,11 @@ fn a_log_appearing_is_picked_up_without_a_restart() {
 
     let after = client.wait_for(|s| s.session_kills == 2);
     assert_eq!(after.lines_ingested, 2);
+    assert_eq!(
+        after.log.as_deref(),
+        Some("eqlog_Daggo_freeport.txt"),
+        "the daemon names the file it is tailing, not its path"
+    );
     // `seq` is monotonic per process run, so a climb proves the daemon that
     // counted these lines is the one that said it was waiting.
     assert!(after.seq > before.seq, "no restart: seq went {} -> {}", before.seq, after.seq);
@@ -402,6 +408,11 @@ fn the_newest_of_two_files_is_tailed() {
     let snapshot = client.wait_for(|s| s.session_kills == 1);
     assert_eq!(snapshot.lines_ingested, 1, "only the newest file is tailed");
     assert!(snapshot.ts.contains("20:00:02"), "the newest file's line, ts was {:?}", snapshot.ts);
+    assert_eq!(
+        snapshot.log.as_deref(),
+        Some("eqlog_Daggo_freeport.txt"),
+        "the name proves it is the current source, not the first one seen"
+    );
     assert!(d.alive());
 }
 
