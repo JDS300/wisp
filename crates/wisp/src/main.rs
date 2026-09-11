@@ -37,7 +37,7 @@ usage: wisp run [--log <path> | --logs-dir <dir>] [--spells <dir>] [--from-start
        wisp config path | show | set <key> <value>
        wisp hud [list]
        wisp hud place <n> <anchor> <x> <y> | nudge <n> <dx> <dy> | set <n> <key> <value>
-       wisp hud add meter|timers | remove <n> | scale <factor>
+       wisp hud add meter|timers | remove <n> | scale <factor> | output <name>|auto
        wisp version | --version
        config keys: log, logs_dir, spells_dir, scale, backend
        anchors: top-left top top-right left center right bottom-left bottom bottom-right

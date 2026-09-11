@@ -738,6 +738,7 @@ fn hud_list_prints_the_default_layout_when_there_is_no_config() {
             "1  timers -       -       top-right       20   120  w330 rows12",
             "scale 1",
             "chord ctrl+shift+grave",
+            "output auto",
         ],
         "{stdout}"
     );
@@ -947,6 +948,35 @@ fn hud_scale_writes_hud_scale() {
     assert_eq!(out.status.code(), Some(2));
     let out = s.command(&wisp()).args(["hud", "scale", "-1"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn hud_output_writes_hud_output_and_auto_clears_it() {
+    let s = scratch("hud-output");
+    let out = s.command(&wisp()).args(["hud", "output", "DP-1"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("\noutput = \"DP-1\"\n"), "{written}");
+
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.lines().any(|line| line == "output DP-1"), "{stdout}");
+
+    // `auto` hands the choice back to the compositor: the key is gone, not
+    // written as the word.
+    let out = s.command(&wisp()).args(["hud", "output", "auto"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(!written.contains("output"), "{written}");
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.lines().any(|line| line == "output auto"), "{stdout}");
+
+    // No name at all: usage, exit 2, nothing written.
+    let before = fs::read_to_string(s.config_file()).unwrap();
+    let out = s.command(&wisp()).args(["hud", "output", ""]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(s.config_file()).unwrap(), before);
 }
 
 // ---------------------------------------------------------------------------

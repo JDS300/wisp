@@ -130,12 +130,13 @@ a second — nothing talks to it over a socket.
 
 | Command | Effect |
 |---|---|
-| `wisp hud` | lists the blocks: index, kind, shows, segment, anchor, offset, width, rows, hidden |
+| `wisp hud` | lists the blocks: index, kind, shows, segment, anchor, offset, width, rows, hidden; then `scale`, `chord` and `output` |
 | `wisp hud place <n> <anchor> <x> <y>` | sets a block's anchor and offset |
 | `wisp hud nudge <n> <dx> <dy>` | moves a block by a pixel delta |
 | `wisp hud set <n> <key> <value>` | any block key (`shows`, `segment`, `width`, `rows`, `hidden`) |
 | `wisp hud add meter\|timers` / `wisp hud remove <n>` | adds or removes an instance |
 | `wisp hud scale <x>` | sets `hud.scale` |
+| `wisp hud output <name>\|auto` | sets `hud.output` to a monitor `wisp doctor` lists, or removes it |
 
 ### The config file
 

@@ -324,6 +324,7 @@ For setup from a terminal beside the game, and for scripts:
 | `wisp hud set <n> <key> <value>` | any block key (`shows`, `segment`, `width`, `rows`, `hidden`) |
 | `wisp hud add meter\|timers` / `wisp hud remove <n>` | instances |
 | `wisp hud scale <x>` | `hud.scale` |
+| `wisp hud output <name>\|auto` | `hud.output`, or removes it (added 2026-09-11: the key had no verb) |
 
 Every verb edits the file and exits; the running HUD picks the change up
 through live reload within half a second. Nothing talks to the HUD over a

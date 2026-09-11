@@ -34,8 +34,8 @@ pub fn hud(command: HudCommand) -> i32 {
     }
 }
 
-/// The config file's layout, one line per block, then the two `[hud]`
-/// fields. A missing file is [`Layout::default_layout`], the same rule every
+/// The config file's layout, one line per block, then the three `[hud]`
+/// fields (`output` prints as `auto` when unset). A missing file is [`Layout::default_layout`], the same rule every
 /// reader of the config uses.
 ///
 /// A layout that did not parse is the one case `list` refuses rather than
@@ -54,6 +54,7 @@ fn list() -> i32 {
     }
     println!("scale {}", layout.hud.scale);
     println!("chord {}", layout.hud.chord);
+    println!("output {}", layout.hud.output.as_deref().unwrap_or("auto"));
     0
 }
 
@@ -225,6 +226,10 @@ fn edit(layout: &mut Layout, command: HudCommand) -> Result<(), i32> {
         }
         HudCommand::Scale(factor) => {
             layout.hud.scale = factor;
+            Ok(())
+        }
+        HudCommand::Output(name) => {
+            layout.hud.output = name;
             Ok(())
         }
         // `hud()` answers both before this function is ever called.

@@ -42,6 +42,10 @@ pub enum HudCommand {
     Add(BlockKind),
     Remove { index: usize },
     Scale(f32),
+    /// `hud.output`: `Some(name)` pins the HUD to the `wl_output` (or X
+    /// screen) of that name, `None` -- spelled `auto` on the command line --
+    /// removes the key so the compositor picks.
+    Output(Option<String>),
     /// Bad syntax at parse time: an unknown verb, the wrong number of
     /// arguments, or a value that does not even parse (a non-numeric index, an
     /// anchor word not among the nine, a scale that is not a positive number).
@@ -269,6 +273,16 @@ fn hud_command(args: &[OsString]) -> Command {
         {
             Some(factor) if wisp_config::config::is_valid_scale(factor) => {
                 Command::Hud(HudCommand::Scale(factor))
+            }
+            _ => invalid_hud(),
+        },
+        // An output name is whatever the compositor calls it (`DP-1`,
+        // `HDMI-A-1`), so the only shape check is that there is one and it
+        // has no whitespace; whether it exists is the HUD's to report.
+        ("output", [name]) => match name.to_str() {
+            Some("auto") => Command::Hud(HudCommand::Output(None)),
+            Some(name) if !name.is_empty() && !name.contains(char::is_whitespace) => {
+                Command::Hud(HudCommand::Output(Some(name.to_string())))
             }
             _ => invalid_hud(),
         },
@@ -682,6 +696,26 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn hud_output_names_an_output_or_auto() {
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "output", "DP-1"])),
+            Command::Hud(HudCommand::Output(Some("DP-1".to_string())))
+        );
+        assert_eq!(parse(&argv(&["wisp", "hud", "output", "auto"])), Command::Hud(HudCommand::Output(None)));
+        for bad in ["", " ", "auto ", "with space"] {
+            assert!(
+                matches!(parse(&argv(&["wisp", "hud", "output", bad])), Command::Hud(HudCommand::Invalid(_))),
+                "{bad:?}"
+            );
+        }
+        assert!(matches!(parse(&argv(&["wisp", "hud", "output"])), Command::Hud(HudCommand::Invalid(_))));
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "output", "DP-1", "DP-2"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
     }
 
     #[test]
