@@ -31,9 +31,17 @@ the desktop entry inside the AppImage, and Spec 4's did not write one. That
 was fixed on the Spec 5 branch (2026-09-11) and is recorded here so the
 release process owns it.
 
-So: `wisp stop`, a StatusNotifierItem tray icon with four entries, and a
-release path with two channels enforced by one script and described by one
-document.
+Fourth, found the same day in Milestone 4 of Spec 5: in HUD mode the arrow
+keys move the selected block and also move the character. Spec 5 §4.7 says
+why — the HUD polls key state and consumes nothing, so the game keeps every
+key — and chose that because the gamescope spike showed an overlay that took
+focus could not give it back. On the layer-shell backend the compositor
+manages focus, and the protocol has a switch for exactly this. On gamescope
+it stays an open question with one candidate to try.
+
+So: `wisp stop`, a StatusNotifierItem tray icon with four entries, HUD mode
+that owns the keyboard where the compositor lets it, and a release path with
+two channels enforced by one script and described by one document.
 
 ---
 
@@ -80,6 +88,11 @@ document.
   `packaging/cut-release.sh`.** No other path publishes. A version with a
   prerelease suffix is a beta; without one it is live. The AppImage's update
   source follows the channel of the build that carries it.
+- **Spec 5 §3.1 amended: the HUD never changes focus outside HUD mode.**
+  Inside HUD mode, on the layer-shell backend only, it asks the compositor
+  for exclusive keyboard interactivity and releases it on exit; the compositor
+  moves focus and moves it back. On every X11 backend the Spec 5 rule stands
+  unchanged: no focus, empty input region, `GAMESCOPE_NO_FOCUS` set. §4.5.
 - **The tray never blocks the HUD.** Registration, menu events and D-Bus
   traffic run on their own thread; the render loop reads a flag and a
   channel, and a missing or slow bus costs the HUD nothing.
@@ -286,7 +299,78 @@ Lever showing the version after its update); the Gear Lever facts above; and
 what never to do (hand-copy anything into `~/AppImages`; tag by hand; tag a
 branch). README's release section points at it.
 
-### 4.5 The CLI
+### 4.5 HUD mode owns the keyboard — layer shell
+
+`zwlr_layer_surface_v1` has `set_keyboard_interactivity`. The HUD sets `None`
+today and, belt and braces, an empty input region. This spec keeps both
+outside HUD mode and, on the layer-shell backend only, sets `Exclusive` when
+the chord enters the mode and `None` again when `Esc` or the chord leaves it.
+With `Exclusive` on the overlay layer the compositor routes the keyboard to
+the HUD and to nothing else; the game gets no arrow keys. With `None` again
+the compositor returns focus to the toplevel that had it. KWin implements the
+protocol and the switch; Milestone 8 is where that is proven on JDS300's
+session rather than believed.
+
+Two consequences shape the implementation.
+
+**Polling goes blind while the HUD has focus.** `XQueryKeymap` through
+Xwayland reports keys only while an X window holds the keyboard, so once the
+HUD (a Wayland surface) has it, every HUD-mode key including the exit must
+come from `wl_keyboard` events. The chord that *enters* the mode stays on
+polling, because the game has focus then. The `Backend` trait gains:
+
+```rust
+/// Ask for, or give back, the keyboard. A no-op that returns `false` on
+/// backends that cannot (every X11 one), so the caller keeps polling.
+fn take_keyboard(&mut self, exclusive: bool) -> bool;
+/// Key events since the last call, in order. Empty on X11 backends.
+fn drain_keys(&mut self) -> Vec<KeyEvent>;   // KeyEvent { key: Key, pressed: bool }
+```
+
+In HUD mode the main loop feeds `HudMode::handle` from `drain_keys` when
+`take_keyboard(true)` returned `true`, and from the poller as today when it
+returned `false`. The `keys::Key` set is unchanged; `Shift` is tracked from
+its own press and release like any other key.
+
+**No libxkbcommon.** smithay-client-toolkit's keyboard helpers sit behind its
+`xkbcommon` feature, which binds the C library and would end the static musl
+build. The backend implements `Dispatch<wl_keyboard::WlKeyboard>` itself and
+maps the raw evdev codes `wl_keyboard.key` carries:
+
+| Key | evdev | Key | evdev |
+|---|---|---|---|
+| `Escape` | 1 | `BracketLeft` / `BracketRight` | 26 / 27 |
+| `Tab` | 15 | `F` / `H` | 33 / 35 |
+| `Up` / `Down` | 103 / 108 | `Plus` | 13 (`=`), 78 (keypad) |
+| `Left` / `Right` | 105 / 106 | `Minus` | 12, 74 (keypad) |
+| `Shift` | 42, 54 | `Chord` | grave 41 with ctrl 29 or 97 and a shift held |
+
+Arrows, Tab, Esc and Shift are layout-independent. The letters and brackets
+are physical positions — the keys under those caps on a US layout. Accepted
+for eight keys with a help strip that names them; the alternative is parsing
+the compositor's xkb keymap file by hand, which this spec declines.
+
+**When the compositor does not play.** If no `wl_keyboard.enter` arrives
+within 500 ms of asking for `Exclusive`, the backend reverts to `None`,
+prints `wisp-hud: the compositor did not give the HUD the keyboard; HUD-mode
+keys will also reach the game`, and `take_keyboard` returns `false` for the
+rest of the run. HUD mode still works as it does today.
+
+**Gamescope stays as it is, with one candidate.** The Spec 5 spike showed
+that becoming gamescope's focus is a one-way door. An X keyboard *grab* — the
+core-protocol grab request on the HUD's own window, `owner_events = false`,
+async modes, and the matching ungrab on exit — is a different mechanism: the
+server routes key events to the grab window without changing the focus
+window, and the ungrab routes them back without a focus change either, which
+is exactly the step that failed. Untested, and gamescope's `wlserver` sits
+between the X server and the real keyboard, so it may forward nothing to a
+grab or may not resume after one. Milestone 9 is a spike with a hard pass
+criterion; the grab is implemented only if the spike passes, in a follow-up,
+and until then HUD mode on gamescope leaks the arrows and `wisp hud place`
+from a terminal is the leak-free path. The spec records the answer either
+way.
+
+### 4.6 The CLI
 
 `wisp stop` joins the usage text:
 
@@ -309,7 +393,9 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 | 5 | Tray menu model | `TrayState` → menu text and check state is a pure function under unit test; each `TrayEvent` drives the render loop's handler under test with a fake socket for `Stop` |
 | 6 | Tray, live on Plasma | JDS300: the wisp icon appears in the Plasma tray when `wisp run` starts; the status line reads the right file and flips to `fighting` in a fight; the checkbox follows the chord and drives it; Open config opens the file; Stop Wisp takes everything down and the game stays up; no icon and one stderr line under `Xvfb` |
 | 7 | Release channels | Shell tests for every `cut-release.sh` refusal on a scratch repo; `release.sh` on a `-beta.1` version embeds `latest-pre` (checked with `readelf -p .upd_info`) and on a plain version embeds `latest` |
-| 8 | Live, the delivery path | JDS300 cuts `v0.3.0-beta.1` with the script; the release is marked prerelease; `releases/latest` still says `v0.2.0`; a Gear Lever install of the beta shows `0.3.0-beta.1`; then `v0.3.0` live; Gear Lever on v0.2.0 offers 0.3.0 and never offered the beta |
+| 8 | HUD mode owns the keyboard, layer shell | Unit tests: the evdev map, Shift tracking, the 500 ms fallback with a fake that never sends `enter`; JDS300 on Plasma over the game: the chord enters the mode, the arrows move the block and the character stands still, `Esc` leaves the mode and the very next arrow moves the character; ten cycles without a stuck focus |
+| 9 | Gamescope keyboard grab spike | A throwaway probe inside gamescope with the game running: grab on the chord, ungrab on `Esc`; pass only if the game receives keyboard and mouse after the ungrab three cycles in a row. Result recorded in an appendix to this spec; no Wisp code changes from the spike |
+| 10 | Live, the delivery path | JDS300 cuts `v0.3.0-beta.1` with the script; the release is marked prerelease; `releases/latest` still says `v0.2.0`; a Gear Lever install of the beta shows `0.3.0-beta.1`; then `v0.3.0` live; Gear Lever on v0.2.0 offers 0.3.0 and never offered the beta |
 
 ---
 
@@ -337,6 +423,12 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
   `main` prints the commit and tag it would make and changes nothing that
   `git status` shows beyond the three bumped files; each refusal in §4.4
   exits 2 with its one line.
+- On Plasma in HUD mode, with the game focused before the chord: holding `→`
+  for one second moves the selected block and the character does not move;
+  after `Esc`, the same key moves the character and the block stays put.
+  `wisp hud` shows the new offset.
+- Under `xvfb-run` (plain-window backend) HUD mode behaves exactly as v0.2.0:
+  `take_keyboard` returns `false` and the poller drives the keys.
 - After `cut-release.sh 0.3.0-beta.1` for real: the release workflow is green;
   the release is marked pre-release; `gh api repos/JDS300/wisp/releases/latest
   -q .tag_name` prints the previous live tag; the AppImage's `.upd_info` reads
@@ -354,4 +446,7 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 | **GitHub's `make_latest` and `prerelease` flags drift.** | Both set explicitly on every release; the live-cut acceptance line checks `releases/latest` after each beta. |
 | **`cut-release.sh` edits three files with `sed` and gets one wrong.** | The script re-reads each file after editing and refuses if the version does not read back — the same round-trip discipline Spec 5's config writer uses — and the build-and-test step runs on the edited tree before anything is committed. |
 | **The tray's `Activate` (left click) toggling HUD mode surprises someone who expected a menu.** | Plasma opens the menu on right click and shows the title on hover; left click is the SNI convention for the item's primary action, and the mode toggle is the only action that is harmless to hit twice. If it annoys in Milestone 6, `Activate` becomes a no-op and the menu is the only surface — a one-line change. |
+| **KWin ignores `Exclusive` on the overlay layer, or gives focus but never gives it back.** | Milestone 8 runs ten cycles before anything ships; the 500 ms fallback covers the first case at runtime. The second would be a KWin bug to report, and the release fallback is the Spec 5 behaviour behind a config key `hud.take_keyboard = false`, added only if that day comes. |
+| **Physical-position letters confuse a non-QWERTY user.** | The help strip names the keys; six of the eight are layout-independent; the two letters and two brackets are documented as positions. Parsing the xkb keymap is the fix if it is ever asked for. |
+| **A game that reads the keyboard through evdev or a raw device, not the compositor.** | Wine under Xwayland reads through X. A game that bypassed the compositor would still see the arrows; nothing in user space can stop that, and the spec does not claim to. |
 | **`xdg-open` opens the config in something unhelpful.** | It opens what the desktop associates with plain text; that is the user's choice to make and the menu entry's tooltip names the path so it can be opened by hand. |

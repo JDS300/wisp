@@ -312,6 +312,12 @@ Saving writes the config file atomically (write a sibling, rename over), through
 one file with one grammar. The game keeps receiving every key it received
 before: the HUD reads state, it does not consume events.
 
+*Amended by [Spec 6 §4.5](2026-09-11-spec-6-running-it.md) (2026-09-11): on
+the layer-shell backend HUD mode asks the compositor for the keyboard, so the
+arrows no longer reach the game there. The X11 backends keep the rule above;
+Milestone 4 on 2026-09-11 found the arrows walking the character, which is
+what prompted the amendment.*
+
 ### 4.8 The CLI — `wisp hud`
 
 For setup from a terminal beside the game, and for scripts:
