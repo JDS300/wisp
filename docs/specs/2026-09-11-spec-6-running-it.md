@@ -176,7 +176,14 @@ process to package, spawn and reap, for four menu entries.
 spawns the tray thread with `ksni::TrayService::spawn`. If registration fails
 — no watcher on the bus, no session bus at all (gamescope game mode, `Xvfb`
 in CI) — the HUD prints one line, `wisp-hud: no tray: <reason>`, and carries
-on. The thread owns the D-Bus connection; the render loop and the tray share
+on.
+
+**API correction (Task 9).** This section was designed believing `ksni`
+exposed a `TrayService` type with a `spawn` method. `ksni` 0.3.6 has no such
+type: the real entry point is `ksni::blocking::TrayMethods::spawn`, the trait
+`crates/wisp-hud/src/tray.rs` actually imports and calls; this paragraph is
+corrected rather than rewritten so the record shows what was believed at
+design time and what the crate provides. The thread owns the D-Bus connection; the render loop and the tray share
 an `Arc<Mutex<TrayState>>` and a `std::sync::mpsc` channel of `TrayEvent`s
 the render loop drains once per frame, right where it already handles keys.
 
@@ -451,7 +458,7 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 
 | Risk | Answer |
 |---|---|
-| **ksni and zbus pull an async runtime and a lot of code into a static binary.** | Measured: with the tray unreachable (dependency added, nothing calling it) the stripped musl `wisp-hud` did not grow at all; with the tray wired up and reachable it grew by 3,324,904 bytes, to 7,069,344 — over this row's 3 MB line. The `blocking` + `async-io` features still avoid tokio, and every other binding constraint holds (`static-pie linked`, `statically linked`, no new C dependency, `wisp`'s `Cargo.toml` still dependency-free). Accepted rather than falling back to a hand-written SNI over `zbus` alone: the bulk is `zbus`'s own async/serialisation machinery, which the fallback would keep regardless. |
+| **ksni and zbus pull an async runtime and a lot of code into a static binary.** | Measured: with the tray unreachable (dependency added, nothing calling it) the stripped musl `wisp-hud` did not grow at all; with the tray wired up and reachable it grew by 3,324,904 bytes, to 7,069,344 — over this row's 3 MB line. The `blocking` + `async-io` features still avoid tokio, and every other binding constraint holds (`static-pie linked`, `statically linked`, no new C dependency, `wisp`'s `Cargo.toml` still dependency-free). Accepted rather than falling back to a hand-written SNI over `zbus` alone: the bulk is `zbus`'s own async/serialisation machinery, which the fallback would keep regardless. **Correction (Task 9).** The whole-branch review re-measured the shipped binary against a byte-for-byte reproduction of the v0.2.0 baseline and found the true delta was worse than this row says: +3,390,440 bytes, to 7,130,784. Rather than amend Milestone 4 to accept an overage, `[profile.release] lto = "fat"` and `codegen-units = 1` were added to the root `Cargo.toml`. Under that profile the baseline itself shrinks to 3,437,104 and the shipped `wisp-hud` to 5,888,416 — a delta of +2,451,312, back under this row's 3 MB line — while every binding constraint above still holds and `Cargo.lock` is untouched. This paragraph is corrected rather than rewritten so the record shows the overage that was actually measured and what closed it. |
 | **Reading from clients on a non-blocking socket can spin or block the tick.** | One `read` per client per tick into a fixed buffer, `WouldBlock` is the normal answer, and the tick already sleeps. A client that floods is capped at 256 bytes between newlines and otherwise ignored. |
 | **A beta tester on `latest-pre` is offered a newer live release and loses the beta channel.** | By design: the live release is newer and better. The next beta is offered again because it is newer still. RELEASING.md says so. |
 | **GitHub's `make_latest` and `prerelease` flags drift.** | Both set explicitly on every release; the live-cut acceptance line checks `releases/latest` after each beta. |
