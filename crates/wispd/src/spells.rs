@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::{fs, io};
+use wisp_proto::{DamageType, TimerKind};
 
 pub const SPELLS_FILE: &str = "spells_us.txt";
 pub const STRINGS_FILE: &str = "spells_us_str.txt";
@@ -27,8 +28,54 @@ const F_NAME: usize = 1;
 const F_CAST_MS: usize = 8;
 const F_CAP_TICKS: usize = 12;
 const F_GOOD_EFFECT: usize = 28;
+const F_RESIST_TYPE: usize = 29;
 const S_ID: usize = 0;
 const S_CAST_ON_OTHER: usize = 4;
+
+/// One entry of the effects blob: `slot|effect_id|base|limit|formula|max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Effect {
+    pub id: i64,
+    pub base: i64,
+}
+
+/// Parse the row's effects blob, e.g. `1|10|0|0|100|0$2|11|85|0|102|25`. An
+/// entry with fewer than three subfields, or a non-integer id or base, is
+/// skipped rather than treated as an error: the file has 427 empty blobs
+/// and the parser must not refuse a row for one of them.
+pub fn parse_effects(blob: &str) -> Vec<Effect> {
+    let mut out = Vec::new();
+    for entry in blob.split('$') {
+        if entry.is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = entry.split('|').collect();
+        if f.len() < 3 {
+            continue;
+        }
+        let (Ok(id), Ok(base)) = (f[1].parse::<i64>(), f[2].parse::<i64>()) else {
+            continue;
+        };
+        out.push(Effect { id, base });
+    }
+    out
+}
+
+/// Spec 5 §4.3, in precedence order: mez (effect 31, or the mez landing
+/// prose), slow (effect 11 with base < 100), dot (effect 0 with base < 0 on
+/// a spell with a duration), else debuff.
+pub fn classify(effects: &[Effect], cap_ticks: f64, lands_as: Option<&str>) -> TimerKind {
+    if lands_as == Some(MEZ_PROSE) || effects.iter().any(|e| e.id == 31) {
+        return TimerKind::Mez;
+    }
+    if effects.iter().any(|e| e.id == 11 && e.base < 100) {
+        return TimerKind::Slow;
+    }
+    if cap_ticks > 0.0 && effects.iter().any(|e| e.id == 0 && e.base < 0) {
+        return TimerKind::Dot;
+    }
+    TimerKind::Debuff
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpellInfo {
@@ -40,6 +87,9 @@ pub struct SpellInfo {
     /// The text the log prints after the target's name when this lands,
     /// leading space included. `None` when the client has no such text.
     pub lands_as: Option<String>,
+    pub kind: TimerKind,
+    /// From the resist-type field; meaningful when `kind == TimerKind::Dot`.
+    pub damage_type: DamageType,
 }
 
 #[derive(Debug)]
@@ -119,6 +169,7 @@ impl SpellTable {
             let cast_ms = parse_int(f[F_CAST_MS], SPELLS_FILE, i + 1, "cast time")? as u32;
             let cap_ticks = parse_float(f[F_CAP_TICKS], SPELLS_FILE, i + 1, "duration cap")?;
             let good = parse_int(f[F_GOOD_EFFECT], SPELLS_FILE, i + 1, "good_effect")?;
+            let resist_type = parse_int(f[F_RESIST_TYPE], SPELLS_FILE, i + 1, "resist type")?;
             let lands_as = prose.get(&id).cloned();
 
             if cap_ticks <= 0.0 {
@@ -129,7 +180,10 @@ impl SpellTable {
                 continue;
             }
             let name = f[F_NAME].to_string();
-            let info = SpellInfo { id, name: name.clone(), cast_ms, cap_ticks, detrimental, lands_as };
+            let effects = parse_effects(f[f.len() - 1]);
+            let kind = classify(&effects, cap_ticks, lands_as.as_deref());
+            let damage_type = DamageType::from_resist_type(resist_type);
+            let info = SpellInfo { id, name: name.clone(), cast_ms, cap_ticks, detrimental, lands_as, kind, damage_type };
             match by_name.get(&name) {
                 Some(existing) => {
                     // Names are not unique across eligible rows. Counted
@@ -224,27 +278,30 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    // Hand-written rows in the client's format. Five fields are real
-    // (id, name, cast_ms at 8, cap at 12, good_effect at 28); the rest are
-    // filler so every row has exactly 173 fields. No game data is copied.
-    fn row(id: u32, name: &str, cast_ms: u32, cap: &str, good: u32) -> String {
+    // Hand-written rows in the client's format. Seven fields are real
+    // (id, name, cast_ms at 8, cap at 12, good_effect at 28, resist_type at
+    // 29, effects blob at 172); the rest are filler so every row has
+    // exactly 173 fields. No game data is copied.
+    fn row(id: u32, name: &str, cast_ms: u32, cap: &str, good: u32, resist: &str, effects: &str) -> String {
         let mut f: Vec<String> = vec!["0".to_string(); 173];
         f[0] = id.to_string();
         f[1] = name.to_string();
         f[8] = cast_ms.to_string();
         f[12] = cap.to_string();
         f[28] = good.to_string();
+        f[29] = resist.to_string();
+        f[172] = effects.to_string();
         f.join("^")
     }
 
     fn spells_text() -> String {
         [
-            row(1, "Sleep", 3000, "4", 0),        // detrimental mez-like
-            row(2, "Calm", 3000, "7", 1),         // beneficial lull
-            row(3, "Ward", 2000, "10", 1),        // beneficial buff: not eligible
-            row(4, "Jab", 1000, "0", 0),          // no duration: not eligible
-            row(5, "Sleep", 3000, "9", 0),        // duplicate name, higher id: loses
-            row(6, "Chill", 2000, "20.5", 0),     // fractional cap
+            row(1, "Sleep", 3000, "4", 0, "0", ""),        // detrimental mez-like
+            row(2, "Calm", 3000, "7", 1, "0", ""),         // beneficial lull
+            row(3, "Ward", 2000, "10", 1, "0", ""),        // beneficial buff: not eligible
+            row(4, "Jab", 1000, "0", 0, "0", ""),          // no duration: not eligible
+            row(5, "Sleep", 3000, "9", 0, "0", ""),        // duplicate name, higher id: loses
+            row(6, "Chill", 2000, "20.5", 0, "0", ""),     // fractional cap
         ]
         .join("\n")
             + "\n"
@@ -287,8 +344,8 @@ mod tests {
     #[test]
     fn a_table_with_no_eligible_rows_is_empty() {
         let spells = [
-            row(3, "Ward", 2000, "10", 1), // beneficial buff: not eligible
-            row(4, "Jab", 1000, "0", 0),   // no duration: not eligible
+            row(3, "Ward", 2000, "10", 1, "0", ""), // beneficial buff: not eligible
+            row(4, "Jab", 1000, "0", 0, "0", ""),   // no duration: not eligible
         ]
         .join("\n")
             + "\n";
@@ -341,9 +398,49 @@ mod tests {
     fn a_spell_without_prose_still_loads() {
         // The strings file has no row for id 5's name-sake; parse a table
         // where the eligible spell simply has no landing text.
-        let spells = row(9, "Silent", 1000, "3", 0) + "\n";
+        let spells = row(9, "Silent", 1000, "3", 0, "0", "") + "\n";
         let t = SpellTable::parse(&spells, &strings_text()).unwrap();
         assert_eq!(t.get("Silent").unwrap().lands_as, None);
+    }
+
+    #[test]
+    fn effects_blob_parses_slot_id_base_and_skips_junk() {
+        let e = parse_effects("1|10|0|0|100|0$2|11|85|0|102|25$3|35|16|0|100|0");
+        assert_eq!(e, vec![Effect { id: 10, base: 0 }, Effect { id: 11, base: 85 }, Effect { id: 35, base: 16 }]);
+        assert_eq!(parse_effects(""), vec![]);
+        assert_eq!(parse_effects("1|0|-295|0|102|351"), vec![Effect { id: 0, base: -295 }]);
+        assert_eq!(parse_effects("1|x|y$2|11|80"), vec![Effect { id: 11, base: 80 }], "junk entry skipped, short entry kept");
+    }
+
+    #[test]
+    fn classification_follows_the_spec_table_and_its_precedence() {
+        let fx = parse_effects;
+        assert_eq!(classify(&fx("2|11|85|0|102|25$3|35|16|0|100|0"), 65.0, None), TimerKind::Slow, "Turgur's Insects");
+        assert_eq!(classify(&fx("2|11|90|0|109|65"), 10.0, None), TimerKind::Slow, "Slow");
+        assert_eq!(classify(&fx("1|11|122|0|101|140"), 10.0, None), TimerKind::Debuff, "Alacrity is haste, not slow");
+        assert_eq!(classify(&fx("1|31|2|0|100|55"), 4.0, None), TimerKind::Mez, "Mesmerization by effect 31");
+        assert_eq!(classify(&fx("1|50|-10|0|101|23"), 4.0, Some(MEZ_PROSE)), TimerKind::Mez, "prose alone marks a mez");
+        assert_eq!(classify(&fx("1|36|10|0|100|0$2|79|-41|0|100|41$3|0|-295|0|102|351"), 6.0, None), TimerKind::Dot, "Envenomed Bolt");
+        assert_eq!(classify(&fx("1|0|-24|0|101|29"), 0.0, None), TimerKind::Debuff, "Frost Rift: no duration, no dot");
+        assert_eq!(classify(&fx("1|36|1|0|100|0$2|50|-10|0|101|23"), 4.0, None), TimerKind::Debuff, "Tashani");
+        assert_eq!(classify(&fx("1|11|80|0|101|50$2|0|-5|0|100|5"), 6.0, None), TimerKind::Slow, "slow beats dot");
+        assert_eq!(classify(&fx("1|31|2|0|100|0$2|11|80|0|101|50"), 6.0, None), TimerKind::Mez, "mez beats slow");
+    }
+
+    #[test]
+    fn the_table_carries_kind_and_damage_type_per_row() {
+        let spells = [
+            row(1, "Envenomed Bolt", 3000, "6", 0, "4", "1|36|10|0|100|0$3|0|-295|0|102|351"),
+            row(2, "Turgur's Insects", 3000, "65", 0, "1", "2|11|85|0|102|25"),
+            row(3, "Tashani", 3000, "4", 0, "0", "2|50|-10|0|101|23"),
+        ]
+        .join("\n");
+        let t = SpellTable::parse(&spells, "").unwrap();
+        let bolt = t.get("Envenomed Bolt").unwrap();
+        assert_eq!((bolt.kind, bolt.damage_type), (TimerKind::Dot, DamageType::Poison));
+        assert_eq!(t.get("Turgur's Insects").unwrap().kind, TimerKind::Slow);
+        let tash = t.get("Tashani").unwrap();
+        assert_eq!((tash.kind, tash.damage_type), (TimerKind::Debuff, DamageType::Unresistable));
     }
 
     /// Against the real client. Skipped unless WISP_EQL_DIR is set; run with
@@ -365,5 +462,23 @@ mod tests {
         let tog = t.get("Togor's Insects").unwrap();
         assert_eq!((tog.id, tog.cast_ms, tog.cap_ticks), (507, 5000, 35.0));
         assert_eq!(tog.lands_as.as_deref(), Some(" yawns."));
+    }
+
+    /// Against the real client's classification. Not `#[ignore]`: cheap and
+    /// skipped silently without WISP_EQL_DIR, so it runs in the default
+    /// suite whenever the real table is available; run explicitly with
+    /// `WISP_EQL_DIR=<install> cargo test -p wispd the_real_table_classifies_the_spec_appendix_rows`.
+    #[test]
+    fn the_real_table_classifies_the_spec_appendix_rows() {
+        let Some(dir) = std::env::var_os("WISP_EQL_DIR") else { return };
+        let t = SpellTable::load(Path::new(&dir)).unwrap();
+        assert_eq!(t.get("Turgur's Insects").unwrap().kind, TimerKind::Slow);
+        assert_eq!(t.get("Mesmerization").unwrap().kind, TimerKind::Mez);
+        let bolt = t.get("Envenomed Bolt").unwrap();
+        assert_eq!((bolt.kind, bolt.damage_type), (TimerKind::Dot, DamageType::Poison));
+        assert_eq!(t.get("Plague").unwrap().damage_type, DamageType::Disease);
+        assert_eq!(t.get("Flame Lick").unwrap().damage_type, DamageType::Fire);
+        assert!(t.get("Frost Rift").is_none(), "no duration, so never in the table");
+        assert!(t.get("Alacrity").is_none(), "beneficial, so never in the table");
     }
 }
