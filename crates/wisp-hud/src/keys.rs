@@ -232,6 +232,12 @@ impl Keyboard {
 
 /// Edge detection with repeat: a key newly down fires once; while held, it
 /// fires again after `repeat_after` and then every `repeat_every`.
+///
+/// `Key::Chord` is the one exception: it never repeats, however long it is
+/// held. It toggles HUD mode (or saves and exits it), and a chord held past
+/// `repeat_after` -- entirely plausible; it is usually two or three keys
+/// pressed in sequence -- must not fire that action a second time on the
+/// same physical press.
 pub struct Edges {
     repeat_after: Duration,
     repeat_every: Duration,
@@ -248,6 +254,16 @@ impl Edges {
 
         let mut fired = Vec::new();
         for &key in down {
+            if key == Key::Chord {
+                // Presence in the map means "already fired this hold"; the
+                // `Instant` itself is never read for this key, since it
+                // never reaches the repeat branch below.
+                if let std::collections::hash_map::Entry::Vacant(e) = self.next_fire.entry(key) {
+                    e.insert(now);
+                    fired.push(key);
+                }
+                continue;
+            }
             match self.next_fire.get_mut(&key) {
                 None => {
                     self.next_fire.insert(key, now + self.repeat_after);
@@ -323,6 +339,33 @@ mod tests {
         assert_eq!(edges.update(base + Duration::from_millis(450), &down), Vec::<Key>::new());
         assert_eq!(edges.update(base + Duration::from_millis(500), &down), vec![Key::H], "then every 100ms");
         assert_eq!(edges.update(base + Duration::from_millis(600), &down), vec![Key::H]);
+    }
+
+    #[test]
+    fn the_chord_never_repeats_while_held() {
+        let mut edges = Edges::new(Duration::from_millis(400), Duration::from_millis(100));
+        let base = Instant::now();
+        let down: HashSet<Key> = [Key::Chord].into_iter().collect();
+        let empty: HashSet<Key> = HashSet::new();
+
+        assert_eq!(edges.update(base, &down), vec![Key::Chord]);
+        assert_eq!(
+            edges.update(base + Duration::from_millis(400), &down),
+            Vec::<Key>::new(),
+            "no repeat at what would be an ordinary key's repeat_after"
+        );
+        assert_eq!(
+            edges.update(base + Duration::from_secs(2), &down),
+            Vec::<Key>::new(),
+            "held 2s, still no repeat"
+        );
+
+        assert_eq!(edges.update(base + Duration::from_millis(2050), &empty), Vec::<Key>::new(), "released");
+        assert_eq!(
+            edges.update(base + Duration::from_millis(2060), &down),
+            vec![Key::Chord],
+            "pressed again fires once more"
+        );
     }
 
     #[test]

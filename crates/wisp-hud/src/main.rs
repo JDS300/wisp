@@ -15,10 +15,13 @@ use keys::{Chord, Edges, Key, Keyboard};
 use paint::HudModeView;
 use reload::ConfigWatch;
 use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use theme::Theme;
 use wisp_config::config::{Config, Key as ConfigKey};
+use wisp_config::layout::Layout;
 use wisp_config::write::write_atomic;
 use wisp_probe::BackendKind;
 use wisp_proto::client::StreamEnd;
@@ -110,6 +113,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = model::Session::default();
     let mut last_snapshot = empty_snapshot();
     let mut previous_rects: Vec<backend::Rect> = Vec::new();
+    // The last keyboard-poll error text already printed, so a poll that
+    // keeps failing the same way says so once rather than every 50 ms; a
+    // later poll that fails differently -- or succeeds, then fails again --
+    // still gets its own line.
+    let mut last_keyboard_error: Option<String> = None;
 
     loop {
         let mut redraw = false;
@@ -161,26 +169,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Some(kb) = &mut keyboard {
-            let down = kb.poll()?;
-            let shift_held = down.contains(&Key::Shift);
-            for key in edges.update(now, &down) {
-                match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
-                    Action::Nothing => {}
-                    Action::Redraw => redraw = true,
-                    Action::SaveAndExit => {
-                        redraw = true;
-                        config.layout_mut().clone_from(&layout);
-                        match &config_path {
-                            Some(path) => match write_atomic(path, &config.to_toml()) {
-                                Ok(()) => {
-                                    if let Some(watch) = &mut watch {
-                                        watch.mark_saved();
-                                    }
+            match kb.poll() {
+                Ok(down) => {
+                    // A poll that starts working again is worth reporting on
+                    // if it fails again later -- a fresh occurrence, not a
+                    // continuation of the one already printed.
+                    last_keyboard_error = None;
+                    let shift_held = down.contains(&Key::Shift);
+                    for key in edges.update(now, &down) {
+                        match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
+                            Action::Nothing => {}
+                            Action::Redraw => redraw = true,
+                            Action::SaveAndExit => {
+                                redraw = true;
+                                match &config_path {
+                                    Some(path) => match save_layout(path, &config, &layout) {
+                                        Ok(fresh) => {
+                                            config = fresh;
+                                            if let Some(watch) = &mut watch {
+                                                watch.mark_saved();
+                                            }
+                                        }
+                                        Err(e) => eprintln!("wisp-hud: failed to save config: {e}"),
+                                    },
+                                    None => eprintln!("wisp-hud: failed to save config: no config path"),
                                 }
-                                Err(e) => eprintln!("wisp-hud: failed to save config: {e}"),
-                            },
-                            None => eprintln!("wisp-hud: failed to save config: no config path"),
+                            }
                         }
+                    }
+                }
+                Err(e) => {
+                    if last_keyboard_error.as_deref() != Some(e.as_str()) {
+                        eprintln!("wisp-hud: keyboard poll failed: {e}; HUD mode keys unavailable");
+                        last_keyboard_error = Some(e);
                     }
                 }
             }
@@ -349,6 +370,39 @@ fn print_layout_notices(config: &Config) {
     if let Some(e) = config.layout_error() {
         eprintln!("wisp-hud: config layout ignored: {e}");
     }
+}
+
+/// Saves `layout` into the config file at `path`, for HUD mode's own
+/// save-and-exit.
+///
+/// Re-reads `path` first rather than reusing whatever `Config` `main` has
+/// been holding since startup or the last applied reload: a reload that
+/// arrived while HUD mode was active is deliberately not applied to that
+/// in-memory copy (a live placement session must not have its keys fought by
+/// an incoming layout), but an edit to a key the layout does not touch --
+/// `wisp config set logs_dir …`, a hand edit in a text editor -- must still
+/// survive the HUD's own save rather than being silently overwritten by the
+/// stale in-memory `Config`. Only `layout` itself is applied on top of
+/// whatever was just read; everything else in the file is that fresh read's,
+/// untouched.
+///
+/// A `path` that cannot be read right now -- deleted, briefly locked,
+/// whatever -- falls back to `fallback` (the caller's in-memory `Config`)
+/// instead of failing the save outright, with one line saying so.
+///
+/// Returns the `Config` that was actually written, so the caller can keep
+/// its own copy in sync with what is now on disk.
+fn save_layout(path: &Path, fallback: &Config, layout: &Layout) -> io::Result<Config> {
+    let mut fresh = match fs::read_to_string(path) {
+        Ok(text) => Config::parse(&text),
+        Err(e) => {
+            eprintln!("wisp-hud: could not re-read config before saving ({e}); using the last known config");
+            fallback.clone()
+        }
+    };
+    fresh.layout_mut().clone_from(layout);
+    write_atomic(path, &fresh.to_toml())?;
+    Ok(fresh)
 }
 
 /// The config at `path`, and the lines to say once about it. A key Wisp does
@@ -537,7 +591,6 @@ mod tests {
         assert_eq!(refused.message, "wisp-hud: invalid --backend value: pla\u{fffd}");
     }
 
-    use std::fs;
     use std::path::PathBuf;
 
     /// A file of its own per test, since the harness runs them in parallel
@@ -601,5 +654,43 @@ mod tests {
     #[test]
     fn a_good_chord_parses() {
         assert_eq!(chord_of("ctrl+shift+grave").unwrap(), keys::Chord { ctrl: true, shift: true, alt: false, key: "grave".to_string() });
+    }
+
+    #[test]
+    fn saving_re_reads_the_file_so_a_concurrent_edit_survives() {
+        let path = scratch_file("save-re-reads");
+        // What `main` had in memory since startup: no `log` key at all.
+        let fallback = Config::parse("logs_dir = \"/a\"\n");
+        // While HUD mode was active, something else -- `wisp config set`, a
+        // text editor -- wrote a `log` key the in-memory `fallback` above
+        // does not have.
+        fs::write(&path, "log = \"/b\"\nlogs_dir = \"/a\"\n").unwrap();
+
+        let mut layout = Layout::default_layout();
+        layout.blocks[0].offset = [99, 5];
+
+        let written = save_layout(&path, &fallback, &layout).unwrap();
+        assert_eq!(written.get(ConfigKey::Log), Some("/b"), "the concurrent edit survived the save");
+        assert_eq!(written.layout().blocks[0].offset, [99, 5], "the new layout was applied");
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("log = \"/b\""), "{text}");
+        assert!(text.contains("offset = [99, 5]"), "{text}");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn saving_falls_back_to_the_in_memory_config_when_the_file_cannot_be_read() {
+        let path = scratch_file("save-missing");
+        let _ = fs::remove_file(&path);
+        let fallback = Config::parse("logs_dir = \"/a\"\n");
+        let layout = Layout::default_layout();
+
+        let written = save_layout(&path, &fallback, &layout).unwrap();
+        assert_eq!(written.get(ConfigKey::LogsDir), Some("/a"), "fell back to the in-memory config");
+        assert!(fs::read_to_string(&path).unwrap().contains("logs_dir = \"/a\""));
+
+        let _ = fs::remove_file(&path);
     }
 }
