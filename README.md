@@ -235,6 +235,7 @@ gamescope's from the start, so the Flatpak is natural there instead.
 | 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — verified live over EverQuest on the desktop (personal line tracking DPS, group rows without you); close, linger, zoning and HUD restart not specifically exercised · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
 | 4 | [Packaging and distribution](docs/specs/2026-09-09-spec-4-packaging.md) | Implemented — build, test, clippy, the musl static build, `packaging/release.sh` and the local Flatpak build verified locally; the first CI run on a pushed tag, the Flatpak's live checks against the game, and Milestone 6 (live over EverQuest Legends on the desktop) pending JDS300 · [implementation plan](docs/plans/2026-09-09-spec-4-packaging.md) |
 | 5 | [The HUD — Console look, keyboard layout mode, TOML config](docs/specs/2026-09-10-spec-5-the-hud.md) | Implemented, automated gates green — Milestone 4 (HUD mode over the running game) and Milestone 7 (live verification) pending JDS300 · [implementation plan](docs/plans/2026-09-10-spec-5-the-hud.md) |
+| 6 | [Running it — `wisp stop`, the tray, release channels](docs/specs/2026-09-11-spec-6-running-it.md) | Designed 2026-09-11; not yet implemented |
 
 Spec 1's overlay backends and log parser are implemented and covered by
 automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and
