@@ -57,6 +57,7 @@ pub fn doctor(config: &Config, args: &DoctorArgs) -> i32 {
 
     println!("{}", scale_line(args.scale.as_deref(), config));
     println!("{}", backend_line(args.backend.as_deref(), config, &detect()));
+    println!("{}", outputs_line());
 
     // The one condition the spec fixes: no log, no Wisp. A socket with nothing
     // on it is not a failure — starting the daemon is `wisp run`'s job, not this
@@ -248,6 +249,18 @@ fn backend_line(flag: Option<&str>, config: &Config, detection: &Detection) -> S
                 origin.source("backend")
             ),
         ),
+    }
+}
+
+/// The `outputs:` line: the Wayland outputs the HUD could draw on, or the
+/// reason there are none to name. `wisp_probe::outputs` opens no surface, so
+/// this is safe to call from a report that starts nothing.
+fn outputs_line() -> String {
+    let outputs = wisp_probe::outputs();
+    if outputs.is_empty() {
+        labelled("outputs:", "none (no Wayland display)")
+    } else {
+        labelled("outputs:", &outputs.join(", "))
     }
 }
 

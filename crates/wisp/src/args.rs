@@ -9,19 +9,45 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use wisp_config::config::Key;
+use wisp_config::layout::{Anchor, BlockKind};
 
 /// What `wisp` was asked to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not `Eq`: [`HudCommand::Scale`] carries an `f32`, which has none.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Run(RunArgs),
     Status { json: bool },
     Doctor(DoctorArgs),
     Config(ConfigCommand),
+    Hud(HudCommand),
     Version,
     /// Usage on stderr and exit 2. Bare `wisp` lands here rather than meaning
     /// `run`: the desktop entry and the AppImage's `AppRun` say `run`
     /// explicitly, so a bare `wisp` on `PATH` is a mistake and not a launch.
     Usage,
+}
+
+/// What `wisp hud` was asked to do.
+///
+/// `Set`'s key and value stay text: a block's key vocabulary depends on
+/// nothing this module knows, so validating either is `hud_cmd`'s job, once
+/// the config is loaded and the target block's kind is in hand.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HudCommand {
+    List,
+    Place { index: usize, anchor: Anchor, x: i32, y: i32 },
+    Nudge { index: usize, dx: i32, dy: i32 },
+    Set { index: usize, key: String, value: String },
+    Add(BlockKind),
+    Remove { index: usize },
+    Scale(f32),
+    /// Bad syntax at parse time: an unknown verb, the wrong number of
+    /// arguments, or a value that does not even parse (a non-numeric index, an
+    /// anchor word not among the nine, a scale that is not a positive number).
+    /// Carries the usage text to print, so `hud_cmd::hud` alone owns the exit
+    /// code for every form this command takes.
+    Invalid(String),
 }
 
 /// What `wisp config` was asked to do.
@@ -116,6 +142,7 @@ pub fn parse(argv: &[OsString]) -> Command {
         },
         Some("doctor") => doctor_command(args),
         Some("config") => config_command(args),
+        Some("hud") => hud_command(args),
         Some("version") | Some("--version") if args.is_empty() => Command::Version,
         _ => Command::Usage,
     }
@@ -189,6 +216,100 @@ fn config_command(args: &[OsString]) -> Command {
             None => Command::Config(ConfigCommand::SetUnknown(text_of(name))),
         },
         _ => Command::Usage,
+    }
+}
+
+/// `wisp hud`'s seven forms. A malformed one is [`HudCommand::Invalid`]
+/// carrying the whole usage text (`crate::USAGE`, the one place it is
+/// spelled), so `hud_cmd::hud` is the only place that decides an exit code
+/// for this command.
+fn hud_command(args: &[OsString]) -> Command {
+    let Some(first) = args.first() else {
+        return Command::Hud(HudCommand::List);
+    };
+    let Some(sub) = first.to_str() else {
+        return invalid_hud();
+    };
+    let rest = &args[1..];
+    match (sub, rest) {
+        ("list", []) => Command::Hud(HudCommand::List),
+        ("place", [n, anchor, x, y]) => {
+            match (parse_usize(n), parse_anchor(anchor), parse_i32(x), parse_i32(y)) {
+                (Some(index), Some(anchor), Some(x), Some(y)) => {
+                    Command::Hud(HudCommand::Place { index, anchor, x, y })
+                }
+                _ => invalid_hud(),
+            }
+        }
+        ("nudge", [n, dx, dy]) => match (parse_usize(n), parse_i32(dx), parse_i32(dy)) {
+            (Some(index), Some(dx), Some(dy)) => Command::Hud(HudCommand::Nudge { index, dx, dy }),
+            _ => invalid_hud(),
+        },
+        ("set", [n, key, value]) => match parse_usize(n) {
+            Some(index) => Command::Hud(HudCommand::Set {
+                index,
+                key: text_of(key),
+                value: text_of(value),
+            }),
+            None => invalid_hud(),
+        },
+        ("add", [kind]) => match kind.to_str().and_then(parse_block_kind) {
+            Some(kind) => Command::Hud(HudCommand::Add(kind)),
+            None => invalid_hud(),
+        },
+        ("remove", [n]) => match parse_usize(n) {
+            Some(index) => Command::Hud(HudCommand::Remove { index }),
+            None => invalid_hud(),
+        },
+        ("scale", [factor]) => match factor.to_str().and_then(|text| text.trim().parse::<f32>().ok())
+        {
+            Some(factor) if factor > 0.0 => Command::Hud(HudCommand::Scale(factor)),
+            _ => invalid_hud(),
+        },
+        _ => invalid_hud(),
+    }
+}
+
+fn invalid_hud() -> Command {
+    Command::Hud(HudCommand::Invalid(crate::USAGE.to_string()))
+}
+
+/// `n` as an index: no sign, no leading `+`, nothing but digits -- exactly
+/// what a block's position in the list is.
+fn parse_usize(arg: &OsStr) -> Option<usize> {
+    arg.to_str()?.parse().ok()
+}
+
+/// An offset or a delta: whole, signed.
+fn parse_i32(arg: &OsStr) -> Option<i32> {
+    arg.to_str()?.parse().ok()
+}
+
+/// The nine words [`Anchor`]'s own `serde(rename_all = "kebab-case")` reads,
+/// matched by hand rather than through `toml`: this crate depends on neither
+/// `toml` nor `serde`, and nine strings are not worth adding either for.
+fn parse_anchor(arg: &OsStr) -> Option<Anchor> {
+    match arg.to_str()? {
+        "top-left" => Some(Anchor::TopLeft),
+        "top" => Some(Anchor::Top),
+        "top-right" => Some(Anchor::TopRight),
+        "left" => Some(Anchor::Left),
+        "center" => Some(Anchor::Center),
+        "right" => Some(Anchor::Right),
+        "bottom-left" => Some(Anchor::BottomLeft),
+        "bottom" => Some(Anchor::Bottom),
+        "bottom-right" => Some(Anchor::BottomRight),
+        _ => None,
+    }
+}
+
+/// `wisp hud add`'s one argument: the same two words `BlockKind`'s own
+/// `serde(rename_all = "lowercase")` reads.
+fn parse_block_kind(text: &str) -> Option<BlockKind> {
+    match text {
+        "meter" => Some(BlockKind::Meter),
+        "timers" => Some(BlockKind::Timers),
+        _ => None,
     }
 }
 
@@ -430,6 +551,141 @@ mod tests {
             Command::Config(ConfigCommand::SetUnknown("LOG".to_string())),
             "keys are case-sensitive"
         );
+    }
+
+    #[test]
+    fn hud_with_no_verb_or_list_is_the_report() {
+        assert_eq!(parse(&argv(&["wisp", "hud"])), Command::Hud(HudCommand::List));
+        assert_eq!(parse(&argv(&["wisp", "hud", "list"])), Command::Hud(HudCommand::List));
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "list", "extra"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn hud_place_parses_the_index_anchor_and_offset() {
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "place", "1", "bottom-right", "20", "-5"])),
+            Command::Hud(HudCommand::Place { index: 1, anchor: Anchor::BottomRight, x: 20, y: -5 })
+        );
+        // Every one of the nine words parses.
+        let words = [
+            ("top-left", Anchor::TopLeft),
+            ("top", Anchor::Top),
+            ("top-right", Anchor::TopRight),
+            ("left", Anchor::Left),
+            ("center", Anchor::Center),
+            ("right", Anchor::Right),
+            ("bottom-left", Anchor::BottomLeft),
+            ("bottom", Anchor::Bottom),
+            ("bottom-right", Anchor::BottomRight),
+        ];
+        for (word, anchor) in words {
+            assert_eq!(
+                parse(&argv(&["wisp", "hud", "place", "0", word, "0", "0"])),
+                Command::Hud(HudCommand::Place { index: 0, anchor, x: 0, y: 0 }),
+                "{word}"
+            );
+        }
+        // A word that is not one of the nine, a non-numeric index or offset,
+        // and the wrong number of arguments are all the same refusal.
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "place", "0", "middle", "0", "0"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "place", "x", "top-left", "0", "0"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "place", "0", "top-left", "0"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn hud_nudge_parses_the_index_and_delta() {
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "nudge", "1", "-10", "5"])),
+            Command::Hud(HudCommand::Nudge { index: 1, dx: -10, dy: 5 })
+        );
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "nudge", "1", "-10"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn hud_set_keeps_the_key_and_value_as_text() {
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "set", "0", "shows", "healing"])),
+            Command::Hud(HudCommand::Set { index: 0, key: "shows".to_string(), value: "healing".to_string() })
+        );
+        // The key and value are not validated here -- only `hud_cmd` knows the
+        // five keys, and it needs the loaded block to check them against.
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "set", "0", "nonsense", "also-nonsense"])),
+            Command::Hud(HudCommand::Set {
+                index: 0,
+                key: "nonsense".to_string(),
+                value: "also-nonsense".to_string()
+            })
+        );
+        assert!(
+            matches!(
+                parse(&argv(&["wisp", "hud", "set", "x", "shows", "healing"])),
+                Command::Hud(HudCommand::Invalid(_))
+            ),
+            "a non-numeric index is refused here; a bad key is not"
+        );
+    }
+
+    #[test]
+    fn hud_add_parses_the_two_block_kinds() {
+        assert_eq!(parse(&argv(&["wisp", "hud", "add", "meter"])), Command::Hud(HudCommand::Add(BlockKind::Meter)));
+        assert_eq!(
+            parse(&argv(&["wisp", "hud", "add", "timers"])),
+            Command::Hud(HudCommand::Add(BlockKind::Timers))
+        );
+        assert!(matches!(
+            parse(&argv(&["wisp", "hud", "add", "nonsense"])),
+            Command::Hud(HudCommand::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn hud_remove_parses_the_index() {
+        assert_eq!(parse(&argv(&["wisp", "hud", "remove", "2"])), Command::Hud(HudCommand::Remove { index: 2 }));
+        assert!(
+            matches!(
+                parse(&argv(&["wisp", "hud", "remove", "-1"])),
+                Command::Hud(HudCommand::Invalid(_))
+            ),
+            "a negative number is not a usize"
+        );
+    }
+
+    #[test]
+    fn hud_scale_parses_a_positive_float() {
+        assert_eq!(parse(&argv(&["wisp", "hud", "scale", "1.5"])), Command::Hud(HudCommand::Scale(1.5)));
+        assert_eq!(parse(&argv(&["wisp", "hud", "scale", "2"])), Command::Hud(HudCommand::Scale(2.0)));
+        for bad in ["0", "-1", "not-a-number", ""] {
+            assert!(
+                matches!(parse(&argv(&["wisp", "hud", "scale", bad])), Command::Hud(HudCommand::Invalid(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_hud_verb_is_invalid() {
+        assert!(matches!(parse(&argv(&["wisp", "hud", "nonsense"])), Command::Hud(HudCommand::Invalid(_))));
+        // The usage text it carries is the one `main` prints for everything else.
+        let Command::Hud(HudCommand::Invalid(usage)) = parse(&argv(&["wisp", "hud", "nonsense"])) else {
+            panic!("expected Invalid");
+        };
+        assert_eq!(usage, crate::USAGE);
     }
 
     #[test]

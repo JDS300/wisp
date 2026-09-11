@@ -705,6 +705,144 @@ fn doctor_exits_0_and_names_the_newest_file_when_logs_dir_is_set() {
     assert!(stdout.contains("scale:     32 (--scale flag)"), "{stdout}");
 }
 
+#[test]
+fn doctor_prints_an_outputs_line() {
+    // Which names it prints -- or whether it says "no Wayland display" -- is
+    // machine- and environment-dependent (the scratch `XDG_RUNTIME_DIR` hides
+    // a real compositor's socket the same way it hides a real daemon's), so
+    // this only checks the line is there, exactly as the `backend:` line's
+    // own tests do not pin the detected backend.
+    let s = scratch("doctor-outputs");
+    let out = s.command(&wisp()).arg("doctor").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("outputs:   "), "{stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// hud
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hud_list_prints_the_default_layout_when_there_is_no_config() {
+    let s = scratch("hud-list-default");
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "0  meter  damage  fight   top-left        20   120  w290 rows8",
+            "1  timers -       -       top-right       20   120  w330 rows12",
+            "scale 1",
+            "chord ctrl+shift+grave",
+        ],
+        "{stdout}"
+    );
+    // No config file was written: a read-only verb creates nothing.
+    assert!(!s.config_file().exists());
+
+    // `wisp hud list` is the same report as bare `wisp hud`.
+    let out = s.command(&wisp()).args(["hud", "list"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), stdout);
+}
+
+#[test]
+fn hud_place_then_nudge_then_list() {
+    let s = scratch("hud-place-nudge");
+    let out = s.command(&wisp()).args(["hud", "place", "1", "bottom-right", "20", "20"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", s.config_file().display()),
+        "it prints the path it wrote"
+    );
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("anchor = \"bottom-right\""), "{written}");
+
+    let out = s.command(&wisp()).args(["hud", "nudge", "1", "-10", "5"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("1  timers -       -       bottom-right    10    25  w330 rows12"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn hud_set_shows_and_hidden() {
+    let s = scratch("hud-set");
+    let out = s.command(&wisp()).args(["hud", "set", "0", "shows", "healing"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = s.command(&wisp()).args(["hud", "set", "0", "hidden", "true"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let out = s.command(&wisp()).arg("hud").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("0  meter  healing fight   top-left        20   120  w290 rows8 hidden"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn hud_add_and_remove() {
+    let s = scratch("hud-add-remove");
+    let out = s.command(&wisp()).args(["hud", "add", "meter"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let count = |s: &Scratch| {
+        let out = s.command(&wisp()).arg("hud").output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .count()
+    };
+    assert_eq!(count(&s), 3, "the default two plus the one just added");
+
+    let out = s.command(&wisp()).args(["hud", "remove", "2"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(count(&s), 2);
+}
+
+#[test]
+fn hud_rejects_a_bad_index_and_a_bad_key_with_exit_2() {
+    let s = scratch("hud-bad-index-and-key");
+    let out = s.command(&wisp()).args(["hud", "set", "5", "shows", "healing"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "wisp hud: no block 5 (have 2)\n"
+    );
+    assert!(!s.config_file().exists(), "a refusal is not a partial write");
+
+    let out = s.command(&wisp()).args(["hud", "set", "0", "shows", "nonsense"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "block keys: shows (damage|healing), segment (fight|session), width, rows, hidden (true|false)\n"
+    );
+    assert!(!s.config_file().exists());
+}
+
+#[test]
+fn hud_scale_writes_hud_scale() {
+    let s = scratch("hud-scale");
+    let out = s.command(&wisp()).args(["hud", "scale", "1.5"]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let written = fs::read_to_string(s.config_file()).unwrap();
+    assert!(written.contains("[hud]\nscale = 1.5\n"), "{written}");
+
+    // Not a positive number: refused before anything is written.
+    let out = s.command(&wisp()).args(["hud", "scale", "0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = s.command(&wisp()).args(["hud", "scale", "-1"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
 // ---------------------------------------------------------------------------
 // An unreadable config, in all three of the binaries that read one
 // ---------------------------------------------------------------------------
@@ -847,9 +985,9 @@ fn bare_wisp_and_an_unknown_command_are_usage_with_exit_2() {
         // two independent HUD flags, so the usage must not offer any of them as
         // a choice between the flags beside it.
         assert!(stderr.contains("[--log <path> | --logs-dir <dir>] [--spells <dir>]"), "{stderr}");
-        assert!(stderr.contains("[--scale <px>] [--backend <name>]"), "{stderr}");
+        assert!(stderr.contains("[--scale <factor>] [--backend <name>]"), "{stderr}");
         // Usage names every command, so the dump is the documentation it is.
-        for command in ["run", "status", "doctor", "config", "version"] {
+        for command in ["run", "status", "doctor", "config", "hud", "version"] {
             assert!(stderr.contains(command), "{argv:?}: {stderr}");
         }
     }
