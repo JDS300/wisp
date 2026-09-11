@@ -4,15 +4,39 @@
 //! the daemon. Snapshots are cheap and idempotent, so a dropped client
 //! simply reconnects and gets the current state.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
-use wisp_proto::{encode, Snapshot};
+use wisp_proto::{encode, Snapshot, STOP_LINE};
+
+/// The only thing a client may ask of the daemon. One variant, deliberately:
+/// Spec 6 §3.2 opens no request vocabulary, and an enum with one arm is the
+/// shape that says so while still being matched exhaustively.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Request {
+    Stop,
+}
+
+/// Bytes kept per client between newlines. 256 is far more than the one
+/// four-byte word the protocol has, and small enough that a thousand
+/// clients cost a quarter of a megabyte.
+const REQUEST_BUFFER: usize = 256;
+
+struct Client {
+    stream: UnixStream,
+    /// Bytes of a line not yet terminated by `\n`.
+    pending: Vec<u8>,
+    /// True once `pending` overflowed: every byte up to and including the
+    /// next newline is discarded, so half a giant line can never be read as
+    /// a request.
+    overflowed: bool,
+}
 
 pub struct Server {
     listener: UnixListener,
-    clients: Vec<UnixStream>,
+    clients: Vec<Client>,
+    path: PathBuf,
 }
 
 impl Server {
@@ -46,6 +70,7 @@ impl Server {
         Ok(Server {
             listener,
             clients: Vec::new(),
+            path: path.to_path_buf(),
         })
     }
 
@@ -68,13 +93,19 @@ impl Server {
                     // must be switched over here. Without this, a client that
                     // stops reading would make a later `write_all` in
                     // `broadcast` block forever, stalling every other client.
+                    // The same switch is what makes the read in `poll_requests`
+                    // non-blocking too.
                     if stream.set_nonblocking(true).is_err() {
                         // Could not prepare the stream; treat like a failed handshake.
                         continue;
                     }
                     if stream.write_all(encode(current).as_bytes()).is_ok() {
                         let _ = stream.flush();
-                        self.clients.push(stream);
+                        self.clients.push(Client {
+                            stream,
+                            pending: Vec::new(),
+                            overflowed: false,
+                        });
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -89,9 +120,96 @@ impl Server {
     /// Write to every client, reaping any that have gone away.
     pub fn broadcast(&mut self, snapshot: &Snapshot) {
         let line = encode(snapshot);
-        self.clients.retain_mut(|stream| {
-            stream.write_all(line.as_bytes()).is_ok() && stream.flush().is_ok()
+        self.clients.retain_mut(|client| {
+            client.stream.write_all(line.as_bytes()).is_ok() && client.stream.flush().is_ok()
         });
+    }
+
+    /// One non-blocking read per client, and the first complete `stop` line
+    /// found. Everything else a client writes is dropped on the floor: the
+    /// client stays connected and keeps receiving snapshots.
+    ///
+    /// At most `REQUEST_BUFFER` bytes are kept per client between newlines.
+    /// A line longer than that is abandoned -- the excess is discarded and
+    /// the rest of that line with it -- and reading resumes cleanly at the
+    /// next newline, so a client that floods costs one fixed buffer and no
+    /// more. A client at end-of-stream, or one whose read fails, is reaped
+    /// here exactly as `broadcast` reaps a client whose write fails.
+    pub fn poll_requests(&mut self) -> Option<Request> {
+        let mut buf = [0u8; REQUEST_BUFFER];
+        let mut stop = false;
+
+        self.clients.retain_mut(|client| {
+            if stop {
+                // A stop line was already found this call; the remaining
+                // clients are not read this tick -- the daemon is about to
+                // exit, so there is no next tick for them to wait for.
+                return true;
+            }
+
+            match client.stream.read(&mut buf) {
+                Ok(0) => false, // end of stream; reap the client
+                Ok(n) => {
+                    if client.overflowed {
+                        // Discard up to and including the next newline.
+                        match buf[..n].iter().position(|&b| b == b'\n') {
+                            Some(nl) => {
+                                client.overflowed = false;
+                                client.pending.clear();
+                                client.pending.extend_from_slice(&buf[nl + 1..n]);
+                            }
+                            None => return true, // still no newline; stay overflowed
+                        }
+                    } else {
+                        client.pending.extend_from_slice(&buf[..n]);
+                    }
+
+                    // Drain every complete line this read produced. A line
+                    // that arrives already terminated is never held in
+                    // `pending` between newlines, however long it was, so
+                    // only a *partial* line can trigger the overflow check
+                    // below.
+                    while let Some(nl) = client.pending.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = client.pending.drain(..=nl).collect();
+                        let line = &line[..line.len() - 1]; // drop the '\n'
+                        let line = line.strip_suffix(b"\r").unwrap_or(line);
+                        if line == STOP_LINE.as_bytes() {
+                            stop = true;
+                            break;
+                        }
+                    }
+
+                    if client.pending.len() > REQUEST_BUFFER {
+                        client.pending.clear();
+                        client.overflowed = true;
+                    }
+
+                    true
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => true,
+                Err(_) => false, // reap a client whose read failed
+            }
+        });
+
+        if stop {
+            Some(Request::Stop)
+        } else {
+            None
+        }
+    }
+
+    /// Stop listening and remove the socket file.
+    ///
+    /// `UnixListener` does not unlink on drop, so a daemon that simply
+    /// returned would leave its socket file behind for `Server::bind` to
+    /// clear next time -- which works, but leaves `wisp status` connecting to
+    /// a dead path and `ls` showing a daemon that is not there. A stop is
+    /// the one exit this daemon has, so it is the one exit that tidies up.
+    pub fn shutdown(self) {
+        let _ = fs::remove_file(&self.path);
+        // `self.listener` and every `Client`'s stream drop here, which
+        // closes every client socket -- `wisp stop`'s acknowledgement is
+        // exactly that close.
     }
 }
 
@@ -225,6 +343,105 @@ mod tests {
         // leftover, not a live daemon, and refusing it would need a restart
         // after every crash.
         let _server = Server::bind(socket.path()).unwrap();
+    }
+
+    #[test]
+    fn a_complete_stop_line_is_reported_once() {
+        let socket = TempSocket::new("stop-line");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let mut client = UnixStream::connect(socket.path()).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+
+        assert_eq!(server.poll_requests(), None, "nothing written yet");
+        client.write_all(b"stop\n").unwrap();
+        client.flush().unwrap();
+        // One read per tick; the write has landed in the socket by the time the
+        // next call happens, because both ends are in this process.
+        assert_eq!(server.poll_requests(), Some(Request::Stop));
+        drop(client);
+    }
+
+    #[test]
+    fn garbage_a_partial_line_and_an_over_long_line_leave_the_server_running() {
+        let socket = TempSocket::new("stop-garbage");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let mut noisy = UnixStream::connect(socket.path()).unwrap();
+        let quiet = UnixStream::connect(socket.path()).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+        assert_eq!(server.client_count(), 2);
+
+        for junk in [&b"stopp\n"[..], br#"{"stop":true}"#, b"\n", b"sto", &[b'x'; 300][..]] {
+            noisy.write_all(junk).unwrap();
+            noisy.flush().unwrap();
+            assert_eq!(server.poll_requests(), None, "junk is never a request");
+        }
+        assert_eq!(server.client_count(), 2, "and the noisy client is not disconnected");
+
+        // Both clients still receive snapshots, which is the whole of "ignored".
+        server.broadcast(&snapshot(2, 3));
+        for stream in [noisy, quiet] {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(wisp_proto::decode(&line).unwrap().seq, 1, "the snapshot sent on accept");
+        }
+    }
+
+    #[test]
+    fn a_partial_stop_line_completes_on_a_later_tick() {
+        let socket = TempSocket::new("stop-partial");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let mut client = UnixStream::connect(socket.path()).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+
+        client.write_all(b"st").unwrap();
+        client.flush().unwrap();
+        assert_eq!(server.poll_requests(), None, "half a word is not a word");
+        client.write_all(b"op\n").unwrap();
+        client.flush().unwrap();
+        assert_eq!(server.poll_requests(), Some(Request::Stop));
+        drop(client);
+    }
+
+    #[test]
+    fn an_over_long_line_is_abandoned_and_does_not_swallow_the_next_one() {
+        let socket = TempSocket::new("stop-overflow");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let mut client = UnixStream::connect(socket.path()).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+
+        client.write_all(&[b'x'; 400]).unwrap();
+        client.flush().unwrap();
+        assert_eq!(server.poll_requests(), None);
+        // The newline ends the abandoned line; the word after it is read normally.
+        client.write_all(b"\nstop\n").unwrap();
+        client.flush().unwrap();
+        assert_eq!(server.poll_requests(), Some(Request::Stop));
+        drop(client);
+    }
+
+    #[test]
+    fn a_client_that_went_away_is_reaped_by_the_read_as_well_as_by_the_write() {
+        let socket = TempSocket::new("stop-eof");
+        let mut server = Server::bind(socket.path()).unwrap();
+        let client = UnixStream::connect(socket.path()).unwrap();
+        server.accept_pending(&snapshot(1, 0));
+        assert_eq!(server.client_count(), 1);
+        drop(client);
+
+        assert_eq!(server.poll_requests(), None);
+        assert_eq!(server.client_count(), 0, "end of stream reaps the client");
+    }
+
+    #[test]
+    fn shutdown_removes_the_socket_file() {
+        let socket = TempSocket::new("stop-shutdown");
+        let server = Server::bind(socket.path()).unwrap();
+        assert!(socket.path().exists());
+        server.shutdown();
+        assert!(!socket.path().exists(), "a stop leaves nothing behind at {}", socket.path().display());
+        // And nothing answers there any more.
+        assert!(UnixStream::connect(socket.path()).is_err());
     }
 
     #[test]

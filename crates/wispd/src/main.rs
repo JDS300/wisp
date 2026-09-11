@@ -301,6 +301,14 @@ fn main() -> std::io::Result<()> {
             encounter: encounter_now,
         };
         srv.accept_pending(&snapshot);
+        // Before the broadcast: a client that asked to stop does not need one
+        // more snapshot, and the line the daemon prints should be the last
+        // thing it does rather than a line after a frame nobody wanted.
+        if let Some(server::Request::Stop) = srv.poll_requests() {
+            eprintln!("wispd: stop requested");
+            srv.shutdown();
+            return Ok(());
+        }
         srv.broadcast(&snapshot);
         sleep(TICK);
     }
