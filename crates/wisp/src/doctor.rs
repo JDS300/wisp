@@ -515,8 +515,18 @@ mod tests {
     #[test]
     fn doctor_reports_the_effective_scale_and_its_origin() {
         assert_eq!(scale_line(None, &Config::parse("# nothing in here\n")), "scale:     48 (default)");
-        assert_eq!(scale_line(None, &Config::parse("scale = 32\n")), "scale:     32 (config scale)");
-        assert_eq!(scale_line(Some("16"), &Config::parse("scale = 32\n")), "scale:     16 (--scale flag)");
+        // `[hud] scale` (Spec 5's own key) is the multiplier as written, with
+        // no Spec-4-pixel conversion — a bare top-level `scale` would be read
+        // as that legacy pixel value and converted (see `wisp_config::config`'s
+        // own tests), which is not what this test is about.
+        assert_eq!(
+            scale_line(None, &Config::parse("[hud]\nscale = 32\n")),
+            "scale:     32 (config scale)"
+        );
+        assert_eq!(
+            scale_line(Some("16"), &Config::parse("[hud]\nscale = 32\n")),
+            "scale:     16 (--scale flag)"
+        );
         // A value the HUD would refuse is printed as the user wrote it rather
         // than dressed up as the default: doctor reports, it does not repair.
         assert_eq!(

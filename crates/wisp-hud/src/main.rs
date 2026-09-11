@@ -502,7 +502,12 @@ mod tests {
 
     #[test]
     fn the_config_file_is_used_when_there_is_no_flag() {
-        let config = Config::parse("scale = 16\n");
+        // `[hud] scale` (Spec 5's own key) is the multiplier as written, with
+        // no Spec-4-pixel conversion — a bare top-level `scale` would be
+        // read as that legacy pixel value and converted (see
+        // `wisp_config::config`'s own tests), which is not what this test is
+        // about.
+        let config = Config::parse("[hud]\nscale = 16\n");
         assert_eq!(scale_of(resolve(None, config.get(Key::Scale))), Ok(16.0));
     }
 

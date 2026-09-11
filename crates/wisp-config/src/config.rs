@@ -314,20 +314,7 @@ impl Config {
         }
 
         let mut layout = Layout::default_layout();
-        let mut converted_scale = None;
-        if let Some(raw) = raw_scale {
-            match raw.trim().parse::<f32>() {
-                Ok(px) => {
-                    let factor = px / 13.0;
-                    layout.hud.scale = factor;
-                    values.insert(Key::Scale, format!("{factor:.2}"));
-                    converted_scale = Some((raw, factor));
-                }
-                Err(_) => {
-                    values.insert(Key::Scale, raw);
-                }
-            }
-        }
+        let converted_scale = raw_scale.and_then(|raw| apply_top_level_scale(raw, &mut layout, &mut values));
 
         Config { values, unknown_names, unknown_values, layout, layout_error: None, converted_scale }
     }
@@ -342,11 +329,13 @@ impl Config {
             }
         }
 
-        // A bare top-level `scale`, the Spec 4 key, may sit beside an
-        // otherwise-Spec-5 document; it is not converted (that only happens
-        // for a document that is not TOML at all — see `parse_legacy`), just
-        // read back as written, same as the four keys above.
-        let top_scale = table.remove("scale");
+        // A bare top-level `scale`, the Spec 4 pixel value, may sit beside
+        // an otherwise-Spec-5 document — exactly the file Spec 4's own
+        // writer produced. It converts to the HUD's multiplier the same way
+        // `parse_legacy`'s does, whether or not the rest of the document
+        // happens to be valid TOML; an explicit `[hud] scale` wins over it
+        // silently, since that is Spec 5's own key for the same thing.
+        let top_scale = table.remove("scale").as_ref().map(value_as_written);
 
         let hud_entry = table.remove("hud");
         let block_entry = table.remove("block");
@@ -380,7 +369,7 @@ impl Config {
             None => None,
         };
 
-        let layout = if layout_error.is_some() {
+        let mut layout = if layout_error.is_some() {
             Layout::default_layout()
         } else {
             let mut layout = Layout::default_layout();
@@ -393,14 +382,21 @@ impl Config {
             layout
         };
 
-        let scale_text = hud_scale_explicit
-            .as_ref()
-            .or(raw_hud.as_ref().map(|raw_hud| &raw_hud.scale))
-            .or(top_scale.as_ref())
-            .map(value_as_written);
-        if let Some(text) = scale_text {
-            values.insert(Key::Scale, text);
-        }
+        // `[hud] scale` wins silently over a bare top-level `scale`; failing
+        // that, the top-level one converts like a legacy file's; failing
+        // that, a `[hud]` table with no `scale` field of its own reports its
+        // (default) resolved value.
+        let converted_scale = if let Some(explicit) = &hud_scale_explicit {
+            values.insert(Key::Scale, value_as_written(explicit));
+            None
+        } else if let Some(raw) = top_scale {
+            apply_top_level_scale(raw, &mut layout, &mut values)
+        } else {
+            if let Some(raw_hud) = &raw_hud {
+                values.insert(Key::Scale, value_as_written(&raw_hud.scale));
+            }
+            None
+        };
 
         let mut unknown_names = Vec::new();
         let mut unknown_values = Vec::new();
@@ -409,7 +405,35 @@ impl Config {
             unknown_values.push((name, UnknownValue::Toml(value)));
         }
 
-        Config { values, unknown_names, unknown_values, layout, layout_error, converted_scale: None }
+        Config { values, unknown_names, unknown_values, layout, layout_error, converted_scale }
+    }
+}
+
+/// A top-level `scale` — Spec 4's font-point-size flag — found in either
+/// parse path: the legacy grammar, or a bare key sitting in an otherwise
+/// valid TOML document (exactly the file Spec 4's own writer produced for a
+/// user who only ever ran `wisp config set scale <px>`). Shared so both
+/// paths convert it the same way: a number becomes the HUD's multiplier
+/// (`px / 13.0`, reported through [`Config::converted_scale`] and
+/// [`Config::get`]'s two-decimal text); anything else is kept as raw text so
+/// the HUD's own refusal can name it, with no conversion and no layout
+/// change.
+fn apply_top_level_scale(
+    raw: String,
+    layout: &mut Layout,
+    values: &mut BTreeMap<Key, String>,
+) -> Option<(String, f32)> {
+    match raw.trim().parse::<f32>() {
+        Ok(px) => {
+            let factor = px / 13.0;
+            layout.hud.scale = factor;
+            values.insert(Key::Scale, format!("{factor:.2}"));
+            Some((raw, factor))
+        }
+        Err(_) => {
+            values.insert(Key::Scale, raw);
+            None
+        }
     }
 }
 
@@ -530,10 +554,12 @@ mod tests {
     #[test]
     fn values_are_trimmed() {
         // Valid TOML on its own (a bare top-level `scale`), so this exercises
-        // the TOML path rather than the legacy fallback; the text is still
-        // read back unconverted either way.
+        // the TOML path rather than the legacy fallback; a bare top-level
+        // `scale` converts the same way in either path (it is Spec 4's pixel
+        // value, wherever it turns up), so the text comes back as the
+        // converted multiplier, not "1.5" itself.
         let c = Config::parse("   scale   =   1.5   \n");
-        assert_eq!(c.get(Key::Scale), Some("1.5"));
+        assert_eq!(c.get(Key::Scale), Some("0.12"));
     }
 
     #[test]
@@ -658,6 +684,32 @@ mod tests {
         assert_eq!(c.get(Key::Scale), Some("3.69"));
         assert_eq!(c.layout().blocks.len(), 2, "the default layout");
         assert_eq!(c.layout_error(), None);
+    }
+
+    #[test]
+    fn a_bare_toml_scale_converts_like_a_legacy_one() {
+        // `"scale = 48\n"` is valid TOML on its own (a bare top-level key),
+        // but a top-level `scale` is always Spec 4's pixel value, whichever
+        // parse path reached it: this is exactly the file Spec 4's own
+        // writer produced for a user who only ever ran
+        // `wisp config set scale 48`, and it must not silently lose the
+        // scale on upgrade.
+        let c = Config::parse("scale = 48\n");
+        let (px, factor) = c.converted_scale().expect("a bare top-level scale converts");
+        assert_eq!(px, "48");
+        assert!((factor - 48.0 / 13.0).abs() < 1e-6);
+        assert_eq!(c.get(Key::Scale), Some("3.69"));
+        assert!((c.layout().hud.scale - 48.0 / 13.0).abs() < 1e-6);
+        let out = c.to_toml();
+        assert!(out.contains("[hud]\nscale = 3.69"), "{out}");
+        assert!(!out.contains("\nscale = 48"), "the top-level scale is not re-emitted: {out}");
+
+        // An explicit `[hud] scale` wins over a bare top-level one, silently:
+        // Spec 5's own key beats a leftover Spec 4 one, with no conversion
+        // and no trace of the dropped value.
+        let c = Config::parse("scale = 48\n\n[hud]\nscale = 1.5\n");
+        assert_eq!(c.get(Key::Scale), Some("1.5"), "[hud] scale wins");
+        assert_eq!(c.converted_scale(), None, "the top-level one is dropped silently");
     }
 
     #[test]
