@@ -12,6 +12,7 @@ mod model;
 mod paint;
 mod reload;
 mod theme;
+mod tray;
 
 use backend::OverlayBackend;
 use hud_mode::{Action, HudMode};
@@ -116,6 +117,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut canvas = draw::Canvas::new(screen.0, screen.1);
     let fonts = draw::Fonts::embedded();
 
+    // After the backend is up and before the first frame, so a tray that
+    // cannot register has said so before anything is drawn.
+    let tray_state = std::sync::Arc::new(std::sync::Mutex::new(tray::tray_state(
+        env!("CARGO_PKG_VERSION"),
+        &empty_snapshot(),
+        false,
+    )));
+    let (tray_events, tray_inbox) = std::sync::mpsc::channel::<tray::TrayEvent>();
+    let mut tray = tray::spawn_tray(std::sync::Arc::clone(&tray_state), tray_events);
+    // `xdg-open` children, reaped once a frame so a user who keeps clicking
+    // "Open config" does not leave a row of zombies behind.
+    let mut openers: Vec<std::process::Child> = Vec::new();
+
     let chord = or_refuse(chord_of(&layout.hud.chord));
     let mut keyboard = Keyboard::open(&chord);
     if keyboard.is_none() {
@@ -160,6 +174,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let now = Instant::now();
 
+        // Drained once per frame, where the keys are handled, so a menu click
+        // and a key press take exactly the same path through HUD mode.
+        let mut pending_keys: Vec<Key> = Vec::new();
+        for event in tray_inbox.try_iter() {
+            match tray_action(event) {
+                TrayAction::Key(key) => pending_keys.push(key),
+                TrayAction::OpenConfig => openers.extend(open_config(config_path.as_deref())),
+                TrayAction::Stop => {
+                    if !stop_the_daemon(&path) {
+                        // The daemon is already gone; leaving is what the
+                        // launcher needs to see to bring the rest down.
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        openers.retain_mut(|child| child.try_wait().ok().flatten().is_none());
+
         if let Some(watch) = &mut watch {
             match watch.poll(now) {
                 Some(Ok(cfg)) => {
@@ -187,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        let mut shift_held = false;
         if let Some(kb) = &mut keyboard {
             match kb.poll() {
                 Ok(down) => {
@@ -194,40 +227,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // if it fails again later -- a fresh occurrence, not a
                     // continuation of the one already printed.
                     last_keyboard_error = None;
-                    let shift_held = down.contains(&Key::Shift);
-                    for key in edges.update(now, &down) {
-                        // The one key the loaded config can veto. `Edges`
-                        // fires `Chord` exactly once per physical press (T7),
-                        // so this is one line per press.
-                        if let Some(line) = hud_mode_refusal(&hud_mode, key, config.layout_error()) {
-                            eprintln!("{line}");
-                            continue;
-                        }
-                        match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
-                            Action::Nothing => {}
-                            Action::Redraw => redraw = true,
-                            Action::SaveAndExit => {
-                                redraw = true;
-                                match &config_path {
-                                    Some(path) => match save_layout(path, &config, &layout) {
-                                        Ok(fresh) => {
-                                            config = fresh;
-                                            if let Some(watch) = &mut watch {
-                                                watch.mark_saved();
-                                            }
-                                        }
-                                        Err(e) => eprintln!("wisp-hud: failed to save config: {e}"),
-                                    },
-                                    None => eprintln!("wisp-hud: failed to save config: no config path"),
-                                }
-                            }
-                        }
-                    }
+                    shift_held = down.contains(&Key::Shift);
+                    pending_keys.extend(edges.update(now, &down));
                 }
                 Err(e) => {
                     if last_keyboard_error.as_deref() != Some(e.as_str()) {
                         eprintln!("wisp-hud: keyboard poll failed: {e}; HUD mode keys unavailable");
                         last_keyboard_error = Some(e);
+                    }
+                }
+            }
+        }
+
+        for key in pending_keys {
+            // The one key the loaded config can veto. `Edges` fires `Chord`
+            // exactly once per physical press (T7), so this is one line per
+            // press; the tray's `ToggleHudMode` reaches here the same way, so
+            // it earns the same refusal.
+            if let Some(line) = hud_mode_refusal(&hud_mode, key, config.layout_error()) {
+                eprintln!("{line}");
+                continue;
+            }
+            match hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE) {
+                Action::Nothing => {}
+                Action::Redraw => redraw = true,
+                Action::SaveAndExit => {
+                    redraw = true;
+                    match &config_path {
+                        Some(path) => match save_layout(path, &config, &layout) {
+                            Ok(fresh) => {
+                                config = fresh;
+                                if let Some(watch) = &mut watch {
+                                    watch.mark_saved();
+                                }
+                            }
+                            Err(e) => eprintln!("wisp-hud: failed to save config: {e}"),
+                        },
+                        None => eprintln!("wisp-hud: failed to save config: no config path"),
                     }
                 }
             }
@@ -251,6 +287,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("wisp-hud: {e}");
                 std::process::exit(1);
             }
+        }
+
+        if let Some(tray) = &mut tray {
+            tray.publish(tray::tray_state(env!("CARGO_PKG_VERSION"), &last_snapshot, hud_mode.active));
         }
     }
 }
@@ -399,6 +439,71 @@ fn print_layout_notices(config: &Config) {
     }
 }
 
+/// What one tray event asks of the render loop. `ToggleHudMode` is a
+/// `Key::Chord` and nothing else: the chord's path already carries the
+/// §4.7 refusal, the save on exit and the edge behaviour, and a second path
+/// into HUD mode would be a second set of those rules to keep in step.
+#[derive(Debug, PartialEq, Eq)]
+enum TrayAction {
+    Key(Key),
+    OpenConfig,
+    Stop,
+}
+
+fn tray_action(event: tray::TrayEvent) -> TrayAction {
+    match event {
+        tray::TrayEvent::ToggleHudMode => TrayAction::Key(Key::Chord),
+        tray::TrayEvent::OpenConfig => TrayAction::OpenConfig,
+        tray::TrayEvent::Stop => TrayAction::Stop,
+    }
+}
+
+/// Ask the daemon to stop, exactly as `wisp stop` does: connect, write the
+/// one line, and let go. `false` when there was nothing to write to, in
+/// which case the caller exits 0 itself and the launcher takes the daemon
+/// down with it.
+///
+/// Nothing is read back: the daemon closing this connection is the same
+/// event as the daemon closing the *snapshot* connection, which the render
+/// loop is already watching and already knows how to exit on.
+fn stop_the_daemon(socket: &Path) -> bool {
+    use std::io::Write as _;
+    match std::os::unix::net::UnixStream::connect(socket) {
+        Ok(mut stream) => stream
+            .write_all(format!("{}\n", wisp_proto::STOP_LINE).as_bytes())
+            .and_then(|()| stream.flush())
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Open the config file in whatever the desktop associates with it, and do
+/// not wait. In the Flatpak `xdg-open` is the portal shim and needs no extra
+/// permission.
+fn open_config(path: Option<&Path>) -> Option<std::process::Child> {
+    use std::process::Stdio;
+    let path = match path {
+        Some(path) => path,
+        None => {
+            eprintln!("wisp-hud: cannot open the config: no config path");
+            return None;
+        }
+    };
+    match std::process::Command::new("xdg-open")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => Some(child),
+        Err(e) => {
+            eprintln!("wisp-hud: cannot run xdg-open {}: {e}", path.display());
+            None
+        }
+    }
+}
+
 /// The line refusing `key`, or `None` to let [`HudMode::handle`] have it.
 ///
 /// HUD mode is unavailable while the config file's layout did not parse. What
@@ -498,6 +603,31 @@ fn startup_config() -> (Config, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tray_event_is_the_chord_or_one_of_the_two_commands() {
+        assert_eq!(tray_action(tray::TrayEvent::ToggleHudMode), TrayAction::Key(Key::Chord));
+        assert_eq!(tray_action(tray::TrayEvent::OpenConfig), TrayAction::OpenConfig);
+        assert_eq!(tray_action(tray::TrayEvent::Stop), TrayAction::Stop);
+    }
+
+    #[test]
+    fn stopping_writes_the_stop_line_to_a_listening_daemon_and_says_no_to_nothing() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("wisp-hud-stop-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(stop_the_daemon(&path), "a listening daemon takes the line");
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).unwrap();
+        assert_eq!(line, format!("{}\n", wisp_proto::STOP_LINE));
+
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!stop_the_daemon(&path), "nothing listening is a `false`, not a panic");
+    }
 
     #[test]
     fn resolve_reports_where_the_value_came_from() {
