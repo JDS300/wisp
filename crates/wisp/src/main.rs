@@ -13,6 +13,7 @@ mod config_cmd;
 mod doctor;
 mod hud_cmd;
 mod run;
+mod stop;
 mod status;
 
 use args::{Command, ConfigCommand};
@@ -33,6 +34,7 @@ pub(crate) const USAGE: &str = "\
 usage: wisp run [--log <path> | --logs-dir <dir>] [--spells <dir>] [--from-start] [--stub]
                 [--scale <factor>] [--backend <name>] [-- <command>...]
        wisp status [--json]
+       wisp stop
        wisp doctor [--log <path> | --logs-dir <dir>] [--spells <dir>] [--scale <factor>] [--backend <name>]
        wisp config path | show | set <key> <value>
        wisp hud [list]
@@ -72,6 +74,7 @@ fn dispatch(command: Command) -> i32 {
             let _config = config_or_report();
             status::status(json)
         }
+        Command::Stop => stop::stop(),
         Command::Doctor(args) => doctor::doctor(&config_or_report(), &args),
         Command::Hud(command) => hud_cmd::hud(command),
         Command::Config(ConfigCommand::Path) => config_cmd::path(),
