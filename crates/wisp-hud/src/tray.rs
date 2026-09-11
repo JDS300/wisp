@@ -212,6 +212,20 @@ impl TrayHandle {
             let _ = self.nudge.send(());
         }
     }
+
+    /// A `TrayHandle` over a plain channel, no ksni and no bus involved, so
+    /// the "only nudge when the menu changed" rule in `publish` is a unit
+    /// test rather than something only `spawn_tray`'s updater thread can see.
+    #[cfg(test)]
+    fn for_test() -> (TrayHandle, mpsc::Receiver<()>) {
+        let (nudge, wake) = mpsc::channel();
+        let handle = TrayHandle {
+            state: Arc::new(Mutex::new(TrayState::default())),
+            nudge,
+            last: menu_model(&TrayState::default()),
+        };
+        (handle, wake)
+    }
 }
 
 /// Start the tray on its own thread.
@@ -244,24 +258,34 @@ pub fn spawn_tray(state: Arc<Mutex<TrayState>>, events: Sender<TrayEvent>) -> Op
     };
 
     let (nudge, wake) = mpsc::channel();
+    // Kept back from the closure below so a failed spawn can still shut the
+    // service down: `Builder::spawn` drops the closure (and the `handle` it
+    // moved) when it returns `Err`, so the original would already be gone.
+    let shutdown_handle = handle.clone();
     // The updater thread exists so `publish` cannot wait on the bus:
     // `Handle::update` blocks until the service has emitted its property and
     // layout signals, and that is a socket write this thread can afford and
     // the render loop cannot. The closure is empty because the tray reads the
     // state through the mutex; `update` re-reads `Tray::menu` and diffs it.
-    std::thread::Builder::new()
-        .name("wisp-tray".to_string())
-        .spawn(move || {
-            // Ends when the render loop drops the TrayHandle, which is when
-            // the HUD is exiting anyway.
-            while wake.recv().is_ok() {
-                if handle.update(|_tray| {}).is_none() {
-                    // The service shut down; nothing more to update.
-                    break;
-                }
+    let spawned = std::thread::Builder::new().name("wisp-tray".to_string()).spawn(move || {
+        // Ends when the render loop drops the TrayHandle, which is when
+        // the HUD is exiting anyway.
+        while wake.recv().is_ok() {
+            if handle.update(|_tray| {}).is_none() {
+                // The service shut down; nothing more to update.
+                break;
             }
-        })
-        .ok()?;
+        }
+    });
+    if let Err(e) = spawned {
+        // The item is already registered on the bus at this point: without
+        // this, the render loop would keep publishing into a mutex nobody
+        // ever reads, and the menu would freeze with nothing on stderr. Shut
+        // the service down so the item disappears instead of hanging there.
+        eprintln!("wisp-hud: no tray: {e}");
+        shutdown_handle.shutdown();
+        return None;
+    }
 
     Some(TrayHandle { state, nudge, last: initial })
 }
@@ -347,5 +371,61 @@ mod tests {
 
         let nothing = tray_state("0.3.0", &snapshot(None, None), false);
         assert_eq!((nothing.log_name, nothing.fight), (None, None));
+    }
+
+    #[test]
+    fn publish_only_nudges_the_updater_when_the_menu_actually_changed() {
+        let (mut handle, wake) = TrayHandle::for_test();
+
+        // The very first publish differs from the default `TrayState` the
+        // handle started with, so it nudges.
+        handle.publish(state());
+        assert!(wake.try_recv().is_ok(), "the first publish must nudge");
+
+        // Same content, republished: `lines_ingested`/`seq` do not even
+        // appear in `TrayState`, so a status-only republish -- what every
+        // frame does -- must not wake the updater thread up 20 times a
+        // second for nothing.
+        handle.publish(state());
+        assert!(wake.try_recv().is_err(), "an unchanged menu must not nudge");
+
+        // A real change (the checkbox) nudges again.
+        handle.publish(TrayState { hud_mode: true, ..state() });
+        assert!(wake.try_recv().is_ok(), "a changed menu must nudge");
+    }
+
+    #[test]
+    fn the_menu_is_four_items_in_order() {
+        use ksni::Tray as _;
+        let (events, _events_rx) = mpsc::channel();
+        let tray = WispTray { state: Arc::new(Mutex::new(state())), events };
+        let items = tray.menu();
+        assert_eq!(items.len(), 4, "status line, HUD mode, Open config, Stop Wisp");
+
+        match &items[0] {
+            ksni::MenuItem::Standard(item) => {
+                assert!(!item.enabled, "the status line does nothing when clicked");
+                assert_eq!(item.label, escape_mnemonics(&menu_model(&state()).status));
+            }
+            _ => panic!("item 0 should be the disabled status line"),
+        }
+
+        match &items[1] {
+            ksni::MenuItem::Checkmark(item) => {
+                assert_eq!(item.label, "HUD mode");
+                assert!(!item.checked, "state() has hud_mode: false");
+            }
+            _ => panic!("item 1 should be the HUD mode checkbox"),
+        }
+
+        match &items[2] {
+            ksni::MenuItem::Standard(item) => assert_eq!(item.label, "Open config"),
+            _ => panic!("item 2 should be Open config"),
+        }
+
+        match &items[3] {
+            ksni::MenuItem::Standard(item) => assert_eq!(item.label, "Stop Wisp"),
+            _ => panic!("item 3 should be Stop Wisp"),
+        }
     }
 }
