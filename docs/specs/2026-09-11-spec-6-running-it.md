@@ -1,6 +1,6 @@
 # Spec 6 — running it: `wisp stop`, the tray, release channels
 
-**Status:** designed 2026-09-11; not yet implemented
+**Status:** designed 2026-09-11; implemented 2026-09-11; pending JDS300: Milestone 6 (tray live on Plasma), Milestone 8 (HUD mode over the game), Milestone 9 (the gamescope grab spike) and Milestone 10 (live, the delivery path)
 **Depends on:** [Spec 5 — the HUD](2026-09-10-spec-5-the-hud.md), [Spec 4 — packaging](2026-09-09-spec-4-packaging.md), [Spec 1 — the spine](2026-09-08-spec-1-the-spine.md), [Spec 0 — clean-room charter](2026-09-08-clean-room-charter.md)
 **Target client:** EverQuest Legends. Not Live, not Project Quarm.
 
@@ -153,10 +153,17 @@ stop; it does not remove the file, which is the next `wispd`'s job.
 The tray is a StatusNotifierItem (SNI) registered over the session D-Bus with
 `org.kde.StatusNotifierWatcher`, the interface Plasma, GNOME with the
 AppIndicator extension, and every wlroots bar speak. The crate is `ksni`
-0.3.6 (MIT, pure Rust over `zbus` 5), built with `default-features = false`
+0.3.6 (pure Rust over `zbus` 5), built with `default-features = false`
 and `features = ["blocking", "async-io"]` so no `tokio` enters the static
 musl build. `zbus` needs no C library. ksni's MSRV is 1.80; CI is pinned to
 1.94.1.
+
+**Licence correction (Task 8).** This section was designed believing `ksni`
+was MIT. `cargo metadata` says otherwise: `ksni` 0.3.6's own `[package]
+license` field is `Unlicense`, a public-domain dedication. `THIRD_PARTY.md`
+records the crate's actual licence and every other crate the tray tree
+added; this paragraph is corrected rather than rewritten so the record shows
+what was believed at design time and what the tooling reports.
 
 **Why the HUD and not the launcher.** Every entry on the menu is something the
 HUD already has: the latest snapshot for the status line, `HudMode.active` to
@@ -209,7 +216,11 @@ right-click.
 **The Flatpak** gains `--talk-name=org.kde.StatusNotifierWatcher` in
 `finish-args`; without it the tray thread's registration fails and the HUD
 reports no tray, which is the correct degradation and the reason the line is
-added rather than assumed.
+added rather than assumed. `--talk-name` only lets the sandbox address the
+watcher — it grants no well-known bus name of the tray's own, so inside a
+Flatpak the tray does not own a name on the session bus; `ksni`'s
+`disable_dbus_name(true)` is set whenever `FLATPAK_ID` is present, and
+registration still succeeds without one.
 
 ### 4.3 The log name in the snapshot — protocol v5
 
@@ -440,7 +451,7 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 
 | Risk | Answer |
 |---|---|
-| **ksni and zbus pull an async runtime and a lot of code into a static binary.** | The spike milestone measures it before the tray is written; the `blocking` + `async-io` features avoid tokio. If the stripped musl `wisp-hud` grows by more than 3 MB the fallback is a hand-written SNI over `zbus` alone (item + `com.canonical.dbusmenu`), and the plan says so. |
+| **ksni and zbus pull an async runtime and a lot of code into a static binary.** | Measured: with the tray unreachable (dependency added, nothing calling it) the stripped musl `wisp-hud` did not grow at all; with the tray wired up and reachable it grew by 3,324,904 bytes, to 7,069,344 — over this row's 3 MB line. The `blocking` + `async-io` features still avoid tokio, and every other binding constraint holds (`static-pie linked`, `statically linked`, no new C dependency, `wisp`'s `Cargo.toml` still dependency-free). Accepted rather than falling back to a hand-written SNI over `zbus` alone: the bulk is `zbus`'s own async/serialisation machinery, which the fallback would keep regardless. |
 | **Reading from clients on a non-blocking socket can spin or block the tick.** | One `read` per client per tick into a fixed buffer, `WouldBlock` is the normal answer, and the tick already sleeps. A client that floods is capped at 256 bytes between newlines and otherwise ignored. |
 | **A beta tester on `latest-pre` is offered a newer live release and loses the beta channel.** | By design: the live release is newer and better. The next beta is offered again because it is newer still. RELEASING.md says so. |
 | **GitHub's `make_latest` and `prerelease` flags drift.** | Both set explicitly on every release; the live-cut acceptance line checks `releases/latest` after each beta. |
@@ -449,4 +460,4 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 | **KWin ignores `Exclusive` on the overlay layer, or gives focus but never gives it back.** | Milestone 8 runs ten cycles before anything ships; the 500 ms fallback covers the first case at runtime. The second would be a KWin bug to report, and the release fallback is the Spec 5 behaviour behind a config key `hud.take_keyboard = false`, added only if that day comes. |
 | **Physical-position letters confuse a non-QWERTY user.** | The help strip names the keys; six of the eight are layout-independent; the two letters and two brackets are documented as positions. Parsing the xkb keymap is the fix if it is ever asked for. |
 | **A game that reads the keyboard through evdev or a raw device, not the compositor.** | Wine under Xwayland reads through X. A game that bypassed the compositor would still see the arrows; nothing in user space can stop that, and the spec does not claim to. |
-| **`xdg-open` opens the config in something unhelpful.** | It opens what the desktop associates with plain text; that is the user's choice to make and the menu entry's tooltip names the path so it can be opened by hand. |
+| **`xdg-open` opens the config in something unhelpful.** | It opens what the desktop associates with plain text; that is the user's choice to make. `ksni` 0.3.6's dbusmenu items carry no tooltip field, so the menu entry cannot name the path itself — `wisp config path` prints it instead. |

@@ -61,6 +61,64 @@ trees had:
 `cargo tree -p wisp-config -e normal` is the source for this list; `cargo
 metadata`'s `license` field for each package is the source for the licences.
 
+Spec 6 added a system-tray item, which pulls in `ksni` and the `zbus` D-Bus
+stack. Built with `default-features = false, features = ["blocking",
+"async-io"]`: no `tokio`, and `zbus` needs no C library, so the static musl
+build is unaffected.
+
+- **`ksni`** 0.3.6 — **Unlicense** (public-domain dedication; the crate's own
+  `[package] license` field, checked with `cargo metadata`). Spec 6 §4.2 calls
+  it MIT; the crate says Unlicense, and the crate is right. A
+  StatusNotifierItem and its `com.canonical.dbusmenu` menu, in pure Rust.
+- **`zbus`** 5.19.0 — MIT. The D-Bus session-bus connection the tray
+  registers over.
+- **`zbus_macros`** 5.19.0 — MIT. `zbus`'s derive macros.
+- **`zbus_names`** 4.3.4 — MIT. Well-known and unique D-Bus name types.
+- **`zvariant`** 5.15.0, **`zvariant_derive`** 5.15.0, **`zvariant_utils`**
+  4.2.0 — MIT. The D-Bus wire type system `zbus` serialises over.
+- **`zcheapstr`** 1.1.0 — MIT. `zvariant`'s small-string optimisation.
+- **`endi`** 1.1.1 — MIT. Endian-aware (de)serialisation for `zvariant`.
+- **`memoffset`** 0.9.1 — MIT. Field-offset macro used by `zvariant`.
+- **`uds_windows`** 1.2.1 — MIT. Unix-domain-socket shim for Windows targets;
+  unreachable on the musl/Linux binaries this project ships.
+- **`tracing-attributes`** 0.1.31 — MIT. `#[instrument]` for `zbus`'s
+  tracing calls; `tracing` itself was already in the tree before Spec 6.
+- **`async-io`** 2.6.0, **`async-executor`** 1.14.0, **`async-lock`** 3.4.2,
+  **`async-task`** 4.7.1, **`async-channel`** 2.5.0, **`async-broadcast`**
+  0.7.2, **`async-process`** 2.5.0, **`async-signal`** 0.2.14,
+  **`async-recursion`** 1.1.1, **`async-trait`** 0.1.92, **`blocking`**
+  1.7.0, **`piper`** 0.2.5, **`parking`** 2.2.1, **`event-listener`** 5.4.2,
+  **`event-listener-strategy`** 0.5.4, **`atomic-waker`** 1.1.2,
+  **`futures-channel`** 0.3.34, **`futures-core`** 0.3.34, **`futures-io`**
+  0.3.34, **`futures-lite`** 2.6.1, **`futures-macro`** 0.3.34,
+  **`futures-task`** 0.3.34, **`futures-util`** 0.3.34, **`ordered-stream`**
+  0.2.0, **`task-local`** 0.1.1, **`fastrand`** 2.5.0,
+  **`signal-hook-registry`** 1.4.8 — all Apache-2.0 OR MIT (or the MIT OR
+  Apache-2.0 ordering). The `smol`-family async executor `zbus`'s
+  `async-io` feature runs on; `blocking` alone would not compile without one.
+- **`autocfg`** 1.5.1, **`bumpalo`** 3.20.3, **`enumflags2`** 0.7.12,
+  **`enumflags2_derive`** 0.7.12, **`getrandom`** 0.4.3, **`hex`** 0.4.3,
+  **`once_cell`** 1.21.4, **`pastey`** 0.2.3, **`proc-macro-crate`** 3.5.0,
+  **`rustversion`** 1.0.23, **`serde_repr`** 0.1.21, **`syn`** 2.0.119 (a
+  second version alongside the one already in the tree), **`tempfile`**
+  3.27.0, **`toml_datetime`** 1.1.1+spec-1.1.0 and **`toml_edit`**
+  0.25.15+spec-1.1.0 (both new; a second `toml_datetime` version alongside
+  `wisp-config`'s own), **`uuid`** 1.26.1 — all Apache-2.0 OR MIT / MIT OR
+  Apache-2.0. Transitive build-time and macro dependencies of the `ksni`/
+  `zbus` tree.
+- **`r-efi`** 6.0.0 — **MIT OR Apache-2.0 OR LGPL-2.1-or-later**. A
+  `getrandom` dependency on UEFI targets only; unreachable on the binaries
+  this project ships, recorded because it is new to `Cargo.lock`.
+- **`js-sys`** 0.3.105, **`wasm-bindgen`** 0.2.128, **`wasm-bindgen-macro`**
+  0.2.128, **`wasm-bindgen-macro-support`** 0.2.128, **`wasm-bindgen-shared`**
+  0.2.128 — MIT OR Apache-2.0. `getrandom`'s `wasm32` support; unreachable on
+  the binaries this project ships, recorded because they are new to
+  `Cargo.lock`.
+
+`git diff 017ec26 -- Cargo.lock | grep '^+name'` is the source for what is
+new; `cargo metadata --format-version 1 --locked` is the source for every
+licence above.
+
 ## Packaging tooling
 
 Used at build time, not vendored, except where noted:
