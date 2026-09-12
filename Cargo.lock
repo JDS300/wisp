@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "wisp"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "wisp-config",
  "wisp-probe",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-config"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "serde",
  "toml",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-hud"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "fontdue",
  "ksni",
@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-probe"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "wayland-client",
  "x11rb",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-proto"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "wispd"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
