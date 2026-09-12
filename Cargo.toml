@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/wisp", "crates/wisp-config", "crates/wisp-probe", "crates/wisp-proto", "crates/wispd", "crates/wisp-hud"]
 
 [workspace.package]
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 edition = "2021"
 license = "MIT"
 authors = ["JDS300"]
