@@ -827,6 +827,12 @@ the twenty tray pixmaps. No third-party artwork, no icon theme, no stock
 image. The hand-drawn `packaging/io.github.jds300.Wisp.svg` stays as the
 scalable icon and is unchanged.
 
+**This entry supersedes the 2026-09-11 entry's "The tray pixmaps"
+paragraph.** That paragraph described `tray-22.argb` and `tray-48.argb` as
+rendered from the SVG by `packaging/render-tray-icon.sh`; both that script
+and the two files it produced are gone, replaced by the sheet above and
+`packaging/render-icons.sh`'s twenty.
+
 **Consultation:** none under charter §5. The work read one dependency's own
 source — `ksni` 0.3.6 (`src/tray.rs` and `src/lib.rs`, for `Icon`'s fields and
 `Tray::icon_pixmap`'s contract) — which is ordinary use of a library one
