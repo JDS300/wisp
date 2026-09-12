@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION"),
         &empty_snapshot(),
         false,
+        config.layout_error().is_some(),
     )));
     let (tray_events, tray_inbox) = std::sync::mpsc::channel::<tray::TrayEvent>();
     let mut tray = tray::spawn_tray(std::sync::Arc::clone(&tray_state), tray_events);
@@ -322,7 +323,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Some(tray) = &mut tray {
-            tray.publish(tray::tray_state(env!("CARGO_PKG_VERSION"), &last_snapshot, hud_mode.active));
+            tray.publish(tray::tray_state(
+                env!("CARGO_PKG_VERSION"),
+                &last_snapshot,
+                hud_mode.active,
+                // The same `Config` and the same call the HUD-mode refusal
+                // reads three hundred lines up (`hud_mode_refusal`), so the
+                // icon and the refusal can never disagree, and a live reload
+                // that fixes the file turns the icon green again on the next
+                // frame with no restart.
+                config.layout_error().is_some(),
+            ));
         }
     }
 }
