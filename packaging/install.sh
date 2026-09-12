@@ -47,6 +47,10 @@ prefix="${prefix%/}"
 bin_dir="$prefix/bin"
 apps_dir="$prefix/share/applications"
 icons_dir="$prefix/share/icons/hicolor/scalable/apps"
+# The eight sizes render-icons.sh cuts from the sheet, largest first. The
+# scalable SVG stays beside them: a desktop that prefers a raster at a given
+# size takes the PNG, one that asks for scalable takes the SVG.
+png_sizes=(512 256 128 64 48 32 24 16)
 metainfo_dir="$prefix/share/metainfo"
 
 wisp_bin="$bin_dir/wisp"
@@ -55,6 +59,7 @@ hud_bin="$bin_dir/wisp-hud"
 desktop_file="$apps_dir/io.github.jds300.Wisp.desktop"
 icon_file="$icons_dir/io.github.jds300.Wisp.svg"
 metainfo_file="$metainfo_dir/io.github.jds300.Wisp.metainfo.xml"
+png_file() { echo "$prefix/share/icons/hicolor/$1x$1/apps/io.github.jds300.Wisp.png"; }
 
 # Removes `dir` and walks up removing each parent in turn, stopping before
 # `stop` (never removed itself) and stopping at the first directory that is
@@ -71,9 +76,15 @@ remove_empty_up_to() {
 
 if [[ "$uninstall" -eq 1 ]]; then
     rm -f "$wisp_bin" "$wispd_bin" "$hud_bin" "$desktop_file" "$icon_file" "$metainfo_file"
+    for size in "${png_sizes[@]}"; do
+        rm -f "$(png_file "$size")"
+    done
     remove_empty_up_to "$bin_dir" "$prefix"
     remove_empty_up_to "$apps_dir" "$prefix"
     remove_empty_up_to "$icons_dir" "$prefix"
+    for size in "${png_sizes[@]}"; do
+        remove_empty_up_to "$prefix/share/icons/hicolor/${size}x${size}/apps" "$prefix"
+    done
     remove_empty_up_to "$metainfo_dir" "$prefix"
     exit 0
 fi
@@ -83,4 +94,7 @@ install -D -m 0755 "$here/wispd" "$wispd_bin"
 install -D -m 0755 "$here/wisp-hud" "$hud_bin"
 install -D -m 0644 "$here/io.github.jds300.Wisp.desktop" "$desktop_file"
 install -D -m 0644 "$here/io.github.jds300.Wisp.svg" "$icon_file"
+for size in "${png_sizes[@]}"; do
+    install -D -m 0644 "$here/icons/hicolor/${size}x${size}/apps/io.github.jds300.Wisp.png" "$(png_file "$size")"
+done
 install -D -m 0644 "$here/io.github.jds300.Wisp.metainfo.xml" "$metainfo_file"
