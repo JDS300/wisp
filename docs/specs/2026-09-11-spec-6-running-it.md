@@ -248,7 +248,7 @@ that does not match. Two channels, decided by the version string alone:
 | Channel | Version | Tag | GitHub release | Update source embedded in the AppImage |
 |---|---|---|---|---|
 | live | `0.3.0` | `v0.3.0` | normal | `gh-releases-zsync\|JDS300\|wisp\|latest\|Wisp-*-x86_64.AppImage.zsync` |
-| beta | `0.3.0-beta.1`, `0.3.0-rc.2` | `v0.3.0-beta.1` | marked prerelease | `gh-releases-zsync\|JDS300\|wisp\|latest-pre\|Wisp-*-x86_64.AppImage.zsync` |
+| beta | `0.3.0-beta.1` | `v0.3.0-beta.1` | marked prerelease | `gh-releases-zsync\|JDS300\|wisp\|latest-pre\|Wisp-*-beta.*-x86_64.AppImage.zsync` |
 
 The facts that make this work, verified in Gear Lever's source on
 2026-09-11 (`src/models/GithubUpdater.py`, `UpdateManagerChecker.py`):
@@ -266,14 +266,32 @@ The facts that make this work, verified in Gear Lever's source on
 - An update is detected by the `.zsync` header's hash, so the `.zsync` asset
   must be published beside every AppImage, as release.sh already ensures.
 
+> **Amended 2026-09-12.** Designed as above: `latest-pre` takes the newest
+> non-draft release of any kind, so a beta tester also moves to the next live
+> release when it is newer. JDS300 decided the beta channel is betas only,
+> because Gear Lever's GitHub updater under `latest-pre` walks all releases
+> newest first and takes the *first* whose assets match the `-u` pattern by
+> fnmatch — not simply the newest release regardless of assets. A pattern
+> that only matches beta asset names therefore skips every live release the
+> walk passes over. The beta build's `-u` pattern becomes
+> `Wisp-*-beta.*-x86_64.AppImage.zsync`, matched only by beta assets; the live
+> build keeps `Wisp-*-x86_64.AppImage.zsync`. A beta install now follows
+> betas only, and moving to the live channel means installing a live build,
+> the same as ever, just no longer automatic. Non-release versions are also
+> now spelled `X.Y.Z-beta.N` and nothing else — `cut-release.sh` and
+> release.sh both refuse any other prerelease suffix.
+
 `latest-pre` is Gear Lever's word, not AppImageUpdate's; the reference
 `AppImageUpdate` tool would not resolve it. Accepted: JDS300 uses Gear Lever,
 the live channel stays standard, and a beta build is by definition for
 someone who has read RELEASING.md.
 
-**release.sh** reads the version, and when it contains `-` passes
-`latest-pre` instead of `latest` to `appimagetool -u`. The choice is echoed on
-stderr as `release.sh: channel beta (latest-pre)` or `channel live (latest)`.
+**release.sh** reads the version, refuses (exit 2, one line) unless it is
+either plain or has a prerelease suffix spelled exactly `-beta.N`, and for a
+beta passes `latest-pre` and the beta-only asset pattern above to
+`appimagetool -u` instead of `latest` and the plain pattern. The choice is
+echoed on stderr as `release.sh: channel beta (latest-pre, betas only)` or
+`channel live (latest)`.
 
 **release.yml** passes `prerelease: ${{ contains(github.ref_name, '-') }}` to
 `action-gh-release`, and `make_latest: ${{ !contains(github.ref_name, '-') }}`
@@ -460,7 +478,7 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 |---|---|
 | **ksni and zbus pull an async runtime and a lot of code into a static binary.** | Measured: with the tray unreachable (dependency added, nothing calling it) the stripped musl `wisp-hud` did not grow at all; with the tray wired up and reachable it grew by 3,324,904 bytes, to 7,069,344 — over this row's 3 MB line. The `blocking` + `async-io` features still avoid tokio, and every other binding constraint holds (`static-pie linked`, `statically linked`, no new C dependency, `wisp`'s `Cargo.toml` still dependency-free). Accepted rather than falling back to a hand-written SNI over `zbus` alone: the bulk is `zbus`'s own async/serialisation machinery, which the fallback would keep regardless. **Correction (Task 9).** The whole-branch review re-measured the shipped binary against a byte-for-byte reproduction of the v0.2.0 baseline and found the true delta was worse than this row says: +3,390,440 bytes, to 7,130,784. Rather than amend Milestone 4 to accept an overage, `[profile.release] lto = "fat"` and `codegen-units = 1` were added to the root `Cargo.toml`. Under that profile the baseline itself shrinks to 3,437,104 and the shipped `wisp-hud` to 5,888,416 — a delta of +2,451,312, back under this row's 3 MB line — while every binding constraint above still holds and `Cargo.lock` is untouched. This paragraph is corrected rather than rewritten so the record shows the overage that was actually measured and what closed it. |
 | **Reading from clients on a non-blocking socket can spin or block the tick.** | One `read` per client per tick into a fixed buffer, `WouldBlock` is the normal answer, and the tick already sleeps. A client that floods is capped at 256 bytes between newlines and otherwise ignored. |
-| **A beta tester on `latest-pre` is offered a newer live release and loses the beta channel.** | By design: the live release is newer and better. The next beta is offered again because it is newer still. RELEASING.md says so. |
+| **A beta tester on `latest-pre` is offered a newer live release and loses the beta channel.** | By design: the live release is newer and better. The next beta is offered again because it is newer still. RELEASING.md says so. **Amended 2026-09-12.** This no longer happens: the beta build's `-u` pattern (`Wisp-*-beta.*-x86_64.AppImage.zsync`) only matches beta assets, and Gear Lever's `latest-pre` walk takes the first release whose assets match it, so live releases are skipped over. A beta install now follows betas only; §4.4 has the mechanism. |
 | **GitHub's `make_latest` and `prerelease` flags drift.** | Both set explicitly on every release; the live-cut acceptance line checks `releases/latest` after each beta. |
 | **`cut-release.sh` edits three files with `sed` and gets one wrong.** | The script re-reads each file after editing and refuses if the version does not read back — the same round-trip discipline Spec 5's config writer uses — and the build-and-test step runs on the edited tree before anything is committed. |
 | **The tray's `Activate` (left click) toggling HUD mode surprises someone who expected a menu.** | Plasma opens the menu on right click and shows the title on hover; left click is the SNI convention for the item's primary action, and the mode toggle is the only action that is harmless to hit twice. If it annoys in Milestone 6, `Activate` becomes a no-op and the menu is the only surface — a one-line change. |
