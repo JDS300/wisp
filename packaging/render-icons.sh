@@ -99,9 +99,13 @@ done
 # state : crop box : the post-trim size measured on 2026-09-12. The tiles are
 # not square and not equal to each other; each is asserted on its own so a
 # re-laid-out sheet is caught here rather than shipped.
+# 2026-09-12 review: the two green crops were swapped here (not the words).
+# The sheet's glowing tile ("Active") is brighter than its flatter sibling
+# ("Active (Variant)"), so it now feeds Fighting -- the state the spec and
+# README call "bright green" -- and the flatter tile feeds Tailing, "green".
 tiles=(
-    "tailing:340x350+80+1105:336x337"
-    "fighting:340x350+770+1105:331x335"
+    "tailing:340x350+770+1105:331x335"
+    "fighting:340x350+80+1105:336x337"
     "error:340x350+1470+1105:333x333"
     "waiting:340x350+2170+1105:334x333"
 )

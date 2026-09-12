@@ -85,10 +85,21 @@ on 2026-09-12 and verified by cropping:
 |---|---|---|
 | README banner | `1570x843+47+99` | `docs/art/banner.png`, resized to 1280 wide |
 | Launcher tile | `520x520+1756+200` | trimmed to the rounded square with `-fuzz 8% -trim`, then resized to 512, 256, 128, 64, 48, 32, 24, 16 → `packaging/icons/hicolor/<n>x<n>/apps/io.github.jds300.Wisp.png` |
-| Tray, tailing | `340x350+80+1105` | trimmed the same way, then 48, 32, 24, 22, 16 → `crates/wisp-hud/icons/tray-tailing-<n>.argb` |
-| Tray, fighting (the sheet's "Active (Variant)") | `340x350+770+1105` | → `tray-fighting-<n>.argb` |
+| Tray, tailing (the sheet's "Active (Variant)") | `340x350+770+1105` | trimmed the same way, then 48, 32, 24, 22, 16 → `crates/wisp-hud/icons/tray-tailing-<n>.argb` |
+| Tray, fighting (the sheet's "Active") | `340x350+80+1105` | → `tray-fighting-<n>.argb` |
 | Tray, error | `340x350+1470+1105` | → `tray-error-<n>.argb` |
 | Tray, waiting (the sheet's "Inactive (Idle)") | `340x350+2170+1105` | → `tray-waiting-<n>.argb` |
+
+**Amendment, 2026-09-12 (final review):** the crop boxes above were swapped
+from the original design sheet reading. The sheet never labelled which tile
+was Tailing and which was Fighting; JDS300 picked by brightness, and the
+first cut assigned the flatter tile ("Active") to Fighting and the glowing
+one ("Active (Variant)") to Tailing — the opposite of what §4.3 and the
+README say ("green" for Tailing, "bright green" for Fighting). The review
+measured mean tile green at 48px: the tile at `+80+1105` averages 84.9,
+the tile at `+770+1105` averages 68.0. Swapping the boxes, not the words,
+makes Fighting the brighter tile, matching the spec's and the README's
+prose.
 
 The trim makes each tile exactly its rounded square; the implementer
 records the post-trim sizes in the plan's ledger so a later sheet with a
@@ -147,8 +158,8 @@ pub fn icon_state(s: &TrayState) -> IconState {
 | State | Sheet tile | When |
 |---|---|---|
 | Waiting | Inactive (Idle), grey | the snapshot has no `log` — the daemon is up and no log file exists yet |
-| Tailing | Active, green | a log is being tailed and no encounter is active |
-| Fighting | Active (Variant), bright green | `encounter.active` |
+| Tailing | Active (Variant), green | a log is being tailed and no encounter is active |
+| Fighting | Active, bright green | `encounter.active` |
 | Error | Active (Error), red | the config's layout failed to parse; HUD mode is refused and `wisp hud` says why |
 
 `WispTray::icon_pixmap` returns the five sizes for the current state;
