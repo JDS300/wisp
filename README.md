@@ -46,7 +46,10 @@ you what the daemon is doing at a glance.
 
 ## Install
 
-Three ways. All of them install the same three programs.
+Four paragraphs below, but three installs: the first two are the same
+AppImage — Gear Lever manages it, or you run it by hand, in which case it is
+just a file and `wisp` is not on your `PATH` — then the tarball and the
+Flatpak.
 
 **With Gear Lever, from the AppImage — the easiest.** Download
 `Wisp-<version>-x86_64.AppImage` from the
