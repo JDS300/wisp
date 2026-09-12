@@ -177,9 +177,17 @@ impl Tracker {
                 }
             }
             Event::Slain { target } => {
+                // One row per distinct spell for that name: a mob carrying
+                // several of the player's spells loses all of them, while
+                // twins (the log's same-name limit) still lose one row per
+                // spell per death.
                 let k = key_of(target);
-                if self.retire_earliest(|a| a.key == k).is_some() {
-                    self.stats.ended_slain += 1;
+                let spells: std::collections::BTreeSet<String> =
+                    self.active.iter().filter(|a| a.key == k).map(|a| a.spell.clone()).collect();
+                for spell in spells {
+                    if self.retire_earliest(|a| a.key == k && a.spell == spell).is_some() {
+                        self.stats.ended_slain += 1;
+                    }
                 }
             }
             Event::ZoneChange => {
@@ -579,18 +587,62 @@ mod tests {
     }
 
     #[test]
-    fn death_retires_one_row_of_any_spell_for_that_name() {
+    fn death_retires_one_row_of_each_spell_for_that_name() {
+        // A turmoil toad carrying three of the player's spells: a slow, a
+        // DoT and a second, distinct DoT. One "You have slain" line ends
+        // every one of them, not just the earliest-expiring row overall.
+        let mut t = tracker_with(
+            &[
+                row_full(1, "Turgur's Insects", 3000, "65", 0, "1", "2|11|85|0|102|25"),
+                row_full(2, "Envenomed Bolt", 3000, "6", 0, "4", "3|0|-295|0|102|351"),
+                row_full(3, "Odium", 3000, "12", 0, "2", "3|0|-100|0|102|60"),
+            ],
+            &[(1, " looks sluggish."), (2, " has been poisoned."), (3, " looks pained.")],
+        );
+        t.observe(&at(0, "You begin casting Turgur's Insects."));
+        t.observe(&at(3, "a turmoil toad looks sluggish."));
+        t.observe(&at(4, "You begin casting Envenomed Bolt."));
+        t.observe(&at(7, "a turmoil toad has been poisoned."));
+        t.observe(&at(8, "You begin casting Odium."));
+        t.observe(&at(11, "a turmoil toad looks pained."));
+        assert_eq!(t.active_count(), 3);
+        t.observe(&at(20, "You have slain a turmoil toad!"));
+        assert_eq!(t.active_count(), 0, "all three distinct spells end on the one death line");
+        assert_eq!(t.stats().ended_slain, 3);
+    }
+
+    #[test]
+    fn death_retires_one_row_per_distinct_spell_so_twins_lose_one_each_death() {
+        // Twins share a name in the log, so two landings of the same spell
+        // look identical to the tracker. A death still retires only one row
+        // of that spell; the twin's row survives until it too dies.
+        let mut t = tracker();
+        t.observe(&at(0, "You begin casting Sleep."));
+        t.observe(&at(3, "a rat has been mesmerized."));
+        t.observe(&at(4, "You begin casting Sleep."));
+        t.observe(&at(7, "a rat has been mesmerized."));
+        assert_eq!(t.active_count(), 2);
+        t.observe(&at(10, "You have slain a rat!"));
+        assert_eq!(t.active_count(), 1, "one twin's row is retired");
+        assert_eq!(t.stats().ended_slain, 1);
+        t.observe(&at(11, "You have slain a rat!"));
+        assert_eq!(t.active_count(), 0, "the other twin's row is retired");
+        assert_eq!(t.stats().ended_slain, 2);
+    }
+
+    #[test]
+    fn a_single_death_line_retires_one_row_of_each_distinct_spell_for_that_name() {
         let mut t = tracker();
         t.observe(&at(0, "You begin casting Drowse."));
         t.observe(&at(5, "a rat yawns."));
         t.observe(&at(6, "You begin casting Sleep."));
         t.observe(&at(9, "a rat has been mesmerized."));
         t.observe(&at(12, "You have slain a rat!"));
-        assert_eq!(t.active_count(), 1);
-        assert_eq!(t.timers(12.0)[0].spell, "Drowse", "the mez expired sooner and was retired");
-        t.observe(&at(13, "A rat has been slain by Someone!"));
-        assert_eq!(t.active_count(), 0);
+        assert_eq!(t.active_count(), 0, "one death line ends every distinct spell on the target");
         assert_eq!(t.stats().ended_slain, 2);
+        t.observe(&at(13, "A rat has been slain by Someone!"));
+        assert_eq!(t.active_count(), 0, "nothing left to retire");
+        assert_eq!(t.stats().ended_slain, 2, "the second line finds no rows");
     }
 
     #[test]
@@ -789,6 +841,21 @@ mod tests {
         // ended_slain and ended_expired), but every kind-independent count
         // -- and the sum within each redistributed group -- is unchanged
         // from Spec 2's and Spec 3's numbers.
+        //
+        // 2026-09-12: a slain line now retires one row of *each* distinct
+        // spell for that name instead of only the single earliest-expiring
+        // row overall (Spec 2 rule 3 amendment). ended_slain rises from
+        // 2,041 to 3,590 and ended_expired falls from 2,106 to 732 -- the
+        // rows a mob used to carry past its own death, that used to expire
+        // or wear off later, are now retired at the death line instead.
+        // That cascades into fewer later ticks and worn-offs on rows that
+        // no longer exist by then (ticks_heartbeat 12,814 -> 12,276,
+        // ended_worn_off 1,660 -> 1,600, samples 1,060 -> 1,041,
+        // samples_discarded_short 600 -> 559) and fewer rows still active
+        // at a zone change (cleared_by_zone 144 -> 29). Every
+        // kind-independent count untouched by the rule -- pending_armed,
+        // pending_cancelled, pending_expired, armed and its per-kind
+        // breakdown, promoted_to_dot, ended_awakened -- is unchanged.
         assert_eq!(
             s,
             TrackerStats {
@@ -801,14 +868,14 @@ mod tests {
                 armed_dot: 3243,
                 armed_debuff: 947,
                 promoted_to_dot: 0,
-                ticks_heartbeat: 12814,
-                ended_worn_off: 1660,
+                ticks_heartbeat: 12276,
+                ended_worn_off: 1600,
                 ended_awakened: 21,
-                ended_slain: 2041,
-                ended_expired: 2106,
-                cleared_by_zone: 144,
-                samples: 1060,
-                samples_discarded_short: 600,
+                ended_slain: 3590,
+                ended_expired: 732,
+                cleared_by_zone: 29,
+                samples: 1041,
+                samples_discarded_short: 559,
             }
         );
         assert_eq!((t.active_count(), t.pending_count()), (0, 0));

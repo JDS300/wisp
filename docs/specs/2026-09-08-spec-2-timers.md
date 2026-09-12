@@ -173,6 +173,15 @@ than hidden.
 2. `has been awakened by` — retires the earliest-expiring `mez` row for that
    target.
 3. slain — retires the earliest-expiring row for that target, of any spell.
+
+   *Amended 2026-09-12.* This was designed as one row per death for the same
+   reason as the re-landing rule above: the log's same-name information
+   limit. JDS300 found in play that a mob carrying several of his spells
+   kept all but one of them after it died. The rule is now one row per
+   *distinct spell* for that name: retire the earliest-expiring row of each
+   spell the target carries, so a single mob ends every spell it was
+   carrying, while twins — which still look like one name to the log —
+   still lose only one row per spell, per death.
 4. zone change — retires everything, pending casts included.
 5. Expiry — a row whose countdown has passed zero is held for one tick
    (6 s) waiting for its wear-off line, then retired. A `dot` row is held
