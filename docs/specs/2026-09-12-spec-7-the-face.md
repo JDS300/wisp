@@ -1,6 +1,6 @@
 # Spec 7 — the face: the icon, the tray's four states, the README
 
-**Status:** designed 2026-09-12; not yet implemented
+**Status:** designed 2026-09-12; implemented 2026-09-12; pending JDS300: Milestone 5 (the icon in the app menu and Gear Lever after the next beta; the tray grey, green, bright and red in play)
 **Depends on:** [Spec 6 — running it](2026-09-11-spec-6-running-it.md), [Spec 4 — packaging](2026-09-09-spec-4-packaging.md), [Spec 0 — clean-room charter](2026-09-08-clean-room-charter.md)
 **Target client:** EverQuest Legends. Not Live, not Project Quarm.
 
