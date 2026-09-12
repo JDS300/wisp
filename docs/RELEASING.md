@@ -77,6 +77,10 @@ tree, uncommitted, and it exits 1. Fix and re-run, or
 5. `./Wisp-<version>-x86_64.AppImage --version` prints `wisp <version>`, and
    Gear Lever shows the same string — it reads `X-AppImage-Version` from the
    desktop entry inside the AppImage, which `release.sh` writes.
+6. Read the README's **Install** and **First run** sections against the release
+   you just cut: every command in them must work as written, for the artifact
+   you actually shipped. The README drifts silently otherwise, and it is the
+   only page most people will read.
 
 ## What Gear Lever does, and why `latest-pre` works
 
