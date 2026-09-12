@@ -218,9 +218,14 @@ impl ksni::Tray for WispTray {
         ksni::Status::Active
     }
 
-    fn icon_name(&self) -> String {
-        ITEM_ID.to_string()
-    }
+    // Left as ksni's default (an empty string), deliberately not overridden
+    // to return `ITEM_ID`: Plasma's SNI host resolves a non-empty
+    // `IconName` against the icon theme whenever it can, and only falls
+    // back to `IconPixmap` when it cannot. A tarball, AppImage or Flatpak
+    // install all put the launcher tile under exactly this name (§4.1), so
+    // on a proper install the name always resolved and the tray showed the
+    // static launcher icon forever instead of the four live states. See
+    // §4.3's note in docs/specs/2026-09-12-spec-7-the-face.md.
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         pixmaps(icon_state(&self.snapshot()))
@@ -441,6 +446,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Beta.5 fix A: Plasma prefers a theme icon over `IconPixmap` whenever
+    /// the name resolves, and on a proper install (tarball, AppImage,
+    /// Flatpak all export `io.github.jds300.Wisp` under the icon theme) it
+    /// always resolves -- so the tray showed the static launcher tile
+    /// forever and never the four live states. `id()` still names the item
+    /// (the SNI well-known name and the desktop file both need it); only the
+    /// theme-icon fallback is dropped.
+    #[test]
+    fn icon_name_is_empty_so_a_host_never_prefers_a_theme_icon_over_the_live_pixmaps() {
+        use ksni::Tray as _;
+        let (events, _rx) = mpsc::channel();
+        let tray = WispTray { state: Arc::new(Mutex::new(state())), events };
+        assert_eq!(tray.icon_name(), "", "a non-empty icon_name is a theme name Plasma will prefer");
+        assert_eq!(tray.id(), ITEM_ID, "the item id itself is unchanged");
     }
 
     #[test]
