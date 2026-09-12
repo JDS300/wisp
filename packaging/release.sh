@@ -13,19 +13,33 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
-# Two channels, decided by the version string alone (spec §4.4). A version
-# with a prerelease suffix is a beta and its AppImage points at `latest-pre`,
-# which Gear Lever resolves to the newest non-draft release of any kind; a
-# plain version points at `latest`, which GitHub's own API resolves to the
-# newest non-prerelease. A live user is therefore never offered a beta.
-if [[ "$version" == *-* ]]; then
-    channel="beta"
-    update_channel="latest-pre"
-else
-    channel="live"
-    update_channel="latest"
+# Two channels, decided by the version string alone (spec §4.4). Non-release
+# versions are spelled X.Y.Z-beta.N and nothing else (JDS300, 2026-09-12);
+# refuse before building anything rather than ship an AppImage under a
+# channel name nobody agreed to.
+channel="$(wisp_channel "$version")"
+if [[ "$channel" == "bad" ]]; then
+    echo "release.sh: $version: a beta is spelled X.Y.Z-beta.N (0.3.0-beta.1); nothing else is a channel" >&2
+    exit 2
 fi
-echo "release.sh: channel $channel ($update_channel)" >&2
+
+# The beta channel is betas only (JDS300, 2026-09-12). Gear Lever's GitHub
+# updater, under `latest-pre`, walks all releases newest first and takes the
+# first whose assets match the pattern by fnmatch, so a pattern that only
+# matches beta asset names skips live releases; a beta install therefore
+# follows betas only, and moving to the release channel is installing a
+# release build. The live channel keeps `latest`, which GitHub's own API
+# resolves to the newest non-prerelease, so a live user is never offered a
+# beta either.
+if [[ "$channel" == "beta" ]]; then
+    update_channel="latest-pre"
+    asset_pattern="Wisp-*-beta.*-x86_64.AppImage.zsync"
+    echo "release.sh: channel beta (latest-pre, betas only)" >&2
+else
+    update_channel="latest"
+    asset_pattern="Wisp-*-x86_64.AppImage.zsync"
+    echo "release.sh: channel live (latest)" >&2
+fi
 
 if ! command -v zsyncmake >/dev/null 2>&1; then
     echo "release.sh: zsyncmake not found (package: zsync); appimagetool -u writes no .zsync without it" >&2
@@ -150,7 +164,7 @@ export ARCH=x86_64
     cd "$dist"
     "$cache_dir/$appimagetool_file" \
         --runtime-file "$cache_dir/$runtime_file" \
-        -u "gh-releases-zsync|JDS300|wisp|${update_channel}|Wisp-*-x86_64.AppImage.zsync" \
+        -u "gh-releases-zsync|JDS300|wisp|${update_channel}|${asset_pattern}" \
         "$appdir" "$(basename "$appimage")" 1>&2
 )
 

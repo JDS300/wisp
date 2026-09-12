@@ -142,6 +142,13 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
     || refuse "$version is not a Cargo semver version"
 
+# JDS300, 2026-09-12: the only spelling for a non-release version is
+# X.Y.Z-beta.N. Checked here, right after the semver-format refusal and
+# before the network fetch below, so a typo'd channel gets its own refusal
+# even offline.
+[[ "$(wisp_channel "$version")" != "bad" ]] \
+    || refuse "$version: a beta is spelled X.Y.Z-beta.N (0.3.0-beta.1); nothing else is a channel"
+
 # No --tags here: fetching every remote tag first would re-import a tag
 # straight back into refs/tags/ whenever it already sits on origin, so the
 # "already exists locally" check below would always fire first and the
@@ -166,12 +173,11 @@ if [[ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]]; then
     refuse "the tag $tag already exists on origin"
 fi
 
-if [[ "$version" == *-* ]]; then
-    channel="beta"
+channel="$(wisp_channel "$version")"
+if [[ "$channel" == "beta" ]]; then
     update_channel="latest-pre"
     release_type=' type="development"'
 else
-    channel="live"
     update_channel="latest"
     release_type=''
 fi

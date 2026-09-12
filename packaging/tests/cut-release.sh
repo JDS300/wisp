@@ -145,13 +145,48 @@ expect_refusal "refuses a tag that exists locally" "already exists locally" "$re
 expect_refusal "refuses a tag that exists on origin" "already exists on origin" "$repo" 0.3.0
 
 # --- the comparator, through the one interface that uses it ----------------
+# (0.3.0-alpha.9 and a bare 0.3.0-beta are no longer reached by the
+# comparator at all: the beta-spelling rule below refuses them first.)
 
 make_repo "$repo" "0.3.0-beta.1"
 expect_refusal "a beta does not follow itself" "not greater" "$repo" "0.3.0-beta.1"
-expect_refusal "alpha.9 does not follow beta.1" "not greater" "$repo" "0.3.0-alpha.9"
-expect_refusal "a bare beta does not follow beta.1" "not greater" "$repo" "0.3.0-beta"
 make_repo "$repo" "0.3.0-beta.10"
 expect_refusal "beta.2 does not follow beta.10" "not greater" "$repo" "0.3.0-beta.2"
+
+# --- the beta spelling rule (JDS300, 2026-09-12) ----------------------------
+# X.Y.Z-beta.N, N a positive integer, is the only spelling for a non-release
+# version. Every other prerelease suffix is refused before the network fetch,
+# the "greater than current" check, or anything else that touches the repo.
+
+make_repo "$repo" 0.2.0
+for spelling in "0.3.0-rc.1" "0.3.0-alpha" "0.3.0-beta" "0.3.0-beta.0"; do
+    expect_refusal "refuses $spelling as a channel spelling" \
+        "cut-release.sh: $spelling: a beta is spelled X.Y.Z-beta.N (0.3.0-beta.1); nothing else is a channel" \
+        "$repo" "$spelling"
+done
+# Also covers the two inputs the comparator tests used to exercise directly:
+# alpha.9 and a bare beta are prerelease suffixes that are not beta.N either.
+expect_refusal "alpha.9 is refused as a channel spelling, not compared" \
+    "cut-release.sh: 0.3.0-alpha.9: a beta is spelled X.Y.Z-beta.N (0.3.0-beta.1); nothing else is a channel" \
+    "$repo" "0.3.0-alpha.9"
+[[ -z "$( cd "$repo" && git tag -l )" ]] \
+    && ok "a bad spelling makes no tag" || bad "a bad spelling makes no tag" "$( cd "$repo" && git tag -l )"
+[[ "$( cd "$repo" && git rev-parse HEAD )" == "$( cd "$repo" && git rev-parse origin/main )" ]] \
+    && ok "a bad spelling makes no commit" || bad "a bad spelling makes no commit" "HEAD moved"
+
+# A beta following the previous beta still passes a dry run.
+make_repo "$repo" "0.3.0-beta.1"
+set +e
+run_cut "$repo" "0.3.0-beta.2" --dry-run
+code=$?
+set -e
+if [[ "$code" -ne 0 ]]; then
+    bad "a beta follows the previous beta" "exit $code; stderr: $(cat "$repo.err")"
+else
+    grep -q "channel beta (latest-pre)" "$repo.err" \
+        && ok "a beta follows the previous beta" \
+        || bad "a beta follows the previous beta" "$(cat "$repo.err")"
+fi
 
 # The accepting direction across the same boundary: a live release follows
 # the beta that led up to it.
@@ -167,6 +202,44 @@ else
         && ok "a release follows its own beta" \
         || bad "a release follows its own beta" "$(cat "$repo.err")"
 fi
+
+# --- release.sh refuses a bad channel spelling, before building anything ---
+# A minimal scratch tree: release.sh only needs to read the workspace
+# version and compute the channel before this refusal fires, so nothing
+# else it would otherwise touch (zsyncmake, curl, cargo, dist/) needs to
+# exist here.
+
+release_scratch="$work/release-scratch"
+rm -rf "$release_scratch"
+mkdir -p "$release_scratch/packaging"
+cat >"$release_scratch/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+version = "0.3.0-rc.1"
+edition = "2021"
+EOF
+install -m 0755 "$root/packaging/release.sh" "$release_scratch/packaging/release.sh"
+install -m 0755 "$root/packaging/version.sh" "$release_scratch/packaging/version.sh"
+
+set +e
+( cd "$release_scratch" && ./packaging/release.sh ) >"$release_scratch.out" 2>"$release_scratch.err"
+code=$?
+set -e
+if [[ "$code" -ne 2 ]]; then
+    bad "release.sh refuses a bad channel spelling" \
+        "exit $code, expected 2; stderr: $(cat "$release_scratch.err")"
+elif ! grep -q "release.sh: 0.3.0-rc.1: a beta is spelled X.Y.Z-beta.N (0.3.0-beta.1); nothing else is a channel" \
+        "$release_scratch.err"; then
+    bad "release.sh refuses a bad channel spelling" "stderr: $(cat "$release_scratch.err")"
+else
+    ok "release.sh refuses a bad channel spelling"
+fi
+[[ ! -e "$release_scratch/dist" ]] \
+    && ok "release.sh's refusal builds nothing" \
+    || bad "release.sh's refusal builds nothing" "dist/ exists"
 
 # --- the dry run -----------------------------------------------------------
 
