@@ -3,7 +3,7 @@
 Moved out of `README.md` on 2026-09-12, unchanged: the roadmap, the spec
 table and the provenance note that used to live there. The README is now
 the page a player reads; this is the record of what has been built and
-what has been verified.
+what has been verified (links re-rooted for this file's directory).
 
 ## What this will be
 
@@ -38,7 +38,7 @@ log's combat lines print, nothing inferred or carried from a spell table.
 The automated evidence is a deterministic replay of the same
 1.44-million-line fixture log, reproducing the reference implementation's
 counters exactly: 2,524 fights, with the full table in
-`docs/specs/2026-09-08-spec-3-encounters.md`, §6. Group rows show only
+`specs/2026-09-08-spec-3-encounters.md`, §6. Group rows show only
 players the log has proven are in your group, never you: your numbers are
 the personal line. **On 2026-09-09, JDS300 verified the panel live over
 EverQuest Legends on the desktop:** the personal line tracked his DPS
