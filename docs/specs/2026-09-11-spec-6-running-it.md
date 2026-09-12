@@ -60,7 +60,7 @@ two channels enforced by one script and described by one document.
 - **Signals.** The `wisp` launcher keeps its Spec 4 stance: no signal
   handling, no `libc`, no signal crate. Stopping is a request over the socket
   the daemon already has.
-- **Analytics.** Spec 7.
+- **Analytics.** Spec 7. *(Renumbered 2026-09-12: Spec 7 is now [the face](2026-09-12-spec-7-the-face.md); analytics is Spec 8.)*
 
 ---
 

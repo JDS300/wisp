@@ -47,4 +47,12 @@ modules:
       - install -Dm755 target/release/wisp-hud /app/bin/wisp-hud
       - install -Dm644 packaging/io.github.jds300.Wisp.desktop /app/share/applications/io.github.jds300.Wisp.desktop
       - install -Dm644 packaging/io.github.jds300.Wisp.svg /app/share/icons/hicolor/scalable/apps/io.github.jds300.Wisp.svg
+      - install -Dm644 packaging/icons/hicolor/512x512/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/512x512/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/256x256/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/256x256/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/128x128/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/128x128/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/64x64/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/64x64/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/48x48/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/48x48/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/32x32/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/32x32/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/24x24/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/24x24/apps/io.github.jds300.Wisp.png
+      - install -Dm644 packaging/icons/hicolor/16x16/apps/io.github.jds300.Wisp.png /app/share/icons/hicolor/16x16/apps/io.github.jds300.Wisp.png
       - install -Dm644 packaging/io.github.jds300.Wisp.metainfo.xml /app/share/metainfo/io.github.jds300.Wisp.metainfo.xml

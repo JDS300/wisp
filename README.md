@@ -1,187 +1,185 @@
 # Wisp
 
-**A light over the fight.**
+![A wisp over a log of EverQuest combat lines, with the words EVERQUEST LEGENDS // LINUX LOG PARSER](docs/art/banner.png)
 
-EverQuest Legends log parser and in-game overlay for Linux and Steam Deck.
+**A light over the fight.** Wisp reads the log EverQuest Legends already writes
+and draws a damage meter, a healing meter and spell timers over the game, on
+Linux and on a Steam Deck.
 
----
+## What it does
 
-## What this will be
+Wisp is three small programs. `wispd` tails the game's text log and works out
+what is happening; `wisp-hud` draws that over the game; `wisp` is the command
+you type. You start all three with `wisp run` and you never think about them
+again.
 
-A headless parser plus a small in-game overlay, for Linux only.
-
-| Component | Role |
-|---|---|
-| `wispd` | Headless parser. Tails the EverQuest Legends text log and emits state snapshots over IPC. No UI, no display connection. |
-| `wisp` | CLI and control client — configuration, diagnostics, status. |
-| `wisp-hud` | Overlay renderer. Attaches to whichever display the game is on and draws the HUD. |
-
-Timers for spells landed on mobs read the client's own `spells_us.txt` and
-`spells_us_str.txt` from the user's EverQuest Legends install at runtime and
-are never shipped with Wisp (see Spec 2's binding rule on this). `--spells
-<dir>` overrides where `wispd` looks for them; if they aren't found, timers
-are disabled with a message rather than the daemon refusing to run. Learned
-spell durations persist across sessions at
-`$XDG_DATA_HOME/wisp/durations.json`. The automated evidence is the spell
-loader's counts against the real client files and a deterministic replay of
-a 1.44-million-line fixture log; **JDS300 has verified live that a mez timer
-appears on landing and counts down against the coded colour thresholds
-(warning at 10 s, critical at 5 s), clearing at expiry** — see the Status
-table and `PROVENANCE.md` for exactly what was and was not exercised. Mez
-breaking on the awaken line, kill and zone clearing, restarting the HUD
-mid-fight, and the dimmed `estimated`-confidence shade are **not yet
-exercised**.
-
-The encounter panel shows your damage per second, the damage you are taking
-per second, your healing per second, and ranked rows for every player's
-damage and healing in the current fight — one ledger of the amounts the
-log's combat lines print, nothing inferred or carried from a spell table.
-The automated evidence is a deterministic replay of the same
-1.44-million-line fixture log, reproducing the reference implementation's
-counters exactly: 2,524 fights, with the full table in
-`docs/specs/2026-09-08-spec-3-encounters.md`, §6. Group rows show only
-players the log has proven are in your group, never you: your numbers are
-the personal line. **On 2026-09-09, JDS300 verified the panel live over
-EverQuest Legends on the desktop:** the personal line tracked his DPS
-through a fight and he no longer appeared in the damage or healing rows.
-A groupmate's row appearing after a membership line, the ten-second close
-and thirty-second linger before the panel clears, zoning clearing it at
-once, and restarting `wisp-hud` mid-fight were not specifically exercised
-— see `PROVENANCE.md`. Known limits: other players' summoned pets have no
-owner in the log and appear as their own rows, damage between two mobs is
-not counted at all, and a groupmate who was already in the group when you
-joined has no row until they do something the log prints.
-
-The split is not stylistic. On gamescope — what a Steam Deck runs — an overlay
-must be a client inside the game's own XWayland instance, on a different
-display from everything else. A single-process GUI cannot do that.
-
-## How it draws over the game
-
-By asking the compositor, not by touching the game.
-
-- **On gamescope (Steam Deck, ROG Ally, Legion Go, or any `gamescope` launch):**
-  an ordinary X11 window inside gamescope's XWayland, marked with
-  `GAMESCOPE_EXTERNAL_OVERLAY` and `GAMESCOPE_NO_FOCUS`. This is the same
-  mechanism `mangoapp` uses, and gamescope's own documentation recommends it
-  over drawing inside the game.
-- **On desktop Wayland (KDE, Sway, Hyprland, river):** a `wlr-layer-shell`
-  surface on the overlay layer.
-- **On GNOME:** no layer-shell exists, so an ordinary always-on-top window.
-  This cannot reliably composite above a fullscreen game -- an ordinary
-  window has no way to force itself above exclusive fullscreen content, only
-  above other ordinary windows. GNOME users should run the game windowed or
-  borderless.
-
-**No injection, no `LD_PRELOAD`, no Vulkan layer, no reading game memory.**
-Wisp is a sibling window that the compositor is asked to put on top. It reads
-the log file EverQuest Legends already writes, and nothing else.
-
-**The HUD never takes input** — not focusable, not clickable, not draggable, on
-any backend. EverQuest confines the pointer during right-click mouse-look, and
-the usual fixes for that on Linux (winecfg fullscreen capture, or gamescope's
-`--force-grab-cursor`) hold the pointer outright. Anything wanting clicks loses
-to a pointer grab; something that never wants them cannot. Configuration lives
-in the CLI and a config file instead.
-
-## The HUD
-
-The HUD is a screen-sized transparent frame with two kinds of block drawn on
-it, placed where the player put them:
+The overlay is a screen-sized transparent frame with blocks on it, placed where
+you put them. There are two kinds:
 
 | Block | Draws |
 |---|---|
-| `meter` | Player rows with bars, `shows = damage` or `healing`, `segment = fight` or `session`. You are a row, sorted in place with the others and highlighted, never listed twice. The header carries the display type, the segment, and the fight clock. A config may hold more than one `meter` block. |
-| `timers` | Every active timer, grouped under its target, each row a draining bar coloured by kind (`mez`, `slow`, `dot` with its damage type, `debuff`), with warning and critical colour states as remaining time runs down. One instance. |
+| `meter` | Player rows with bars — damage or healing, for the current fight or the whole session. You are a row, sorted in place with everyone else and highlighted, never listed twice. The header carries what it shows, which segment, and the fight clock. You can have more than one. |
+| `timers` | Every spell you have landed that is still running, grouped under the mob it is on, each row a draining bar. One instance. |
 
-Each block has an `anchor`, a pixel `offset` from it, a `width`, a row cap
-(`rows`), and a `hidden` flag that draws it only as a ghost in HUD mode.
+Timer bars are coloured by what the spell is — a mez, a slow, a damage-over-time
+(shaded by its damage type), or a plain debuff — and turn amber with ten seconds
+left and red with five, so a mez that is about to break is visible without
+reading it.
 
-### Editing the layout in place — HUD mode
+Wisp asks the compositor to put its window on top. **No injection, no
+`LD_PRELOAD`, no Vulkan layer, no reading game memory.** It reads the log file
+the game already writes and nothing else. On gamescope — what a Steam Deck runs
+— it is an ordinary window inside the game's own X server, marked as an external
+overlay, which is the mechanism `mangoapp` uses. On desktop Wayland (KDE, Sway,
+Hyprland, river) it is a layer-shell surface on the overlay layer. On GNOME
+there is no layer shell, so it is an always-on-top window, which cannot reliably
+sit above an exclusive-fullscreen game: run the game windowed or borderless
+there.
 
-`wisp-hud` polls the X server's key state from its own connection (the same
-mechanism MangoHud's toggle key uses), so it never asks for focus. Outside
-HUD mode it recognises one chord, `ctrl+shift+grave` by default. The chord is
-edge-triggered — holding it does not repeat.
+**The overlay never takes input** — not focusable, not clickable, not draggable.
+EverQuest confines the pointer during right-click mouse-look, and anything
+wanting clicks would lose to that grab. You arrange the layout with the keyboard
+or from a terminal instead.
 
-Inside HUD mode, every block gets a dashed outline and a name tag, the
-selected one a solid outline and a halo, and a help strip runs along the
-bottom edge:
+While Wisp is running there is a wisp in your system tray, and its colour tells
+you what the daemon is doing at a glance.
+
+## Install
+
+Four paragraphs below, but three installs: the first two are the same
+AppImage — Gear Lever manages it, or you run it by hand, in which case it is
+just a file and `wisp` is not on your `PATH` — then the tarball and the
+Flatpak.
+
+**With Gear Lever, from the AppImage — the easiest.** Download
+`Wisp-<version>-x86_64.AppImage` from the
+[releases page](https://github.com/JDS300/wisp/releases), open it with Gear
+Lever, and let Gear Lever add it to your menu. It will keep it up to date from
+then on.
+
+**The AppImage by hand.** Download it, `chmod +x` it, and run it. It needs the
+kernel's FUSE interface (`/dev/fuse`), not the `libfuse2` package; where FUSE
+isn't available, `--appimage-extract-and-run` (or setting
+`APPIMAGE_EXTRACT_AND_RUN=1`) runs it without mounting anything. `wisp` won't be
+on your `PATH` this way, so substitute the AppImage's own path wherever a
+command below says `wisp`.
+
+**The tarball.** Download `wisp-<version>-x86_64-linux.tar.gz`, extract it, and
+run `./install.sh`. It puts the three programs and the desktop entry, icons and
+metainfo under `~/.local`; `--prefix <dir>` installs somewhere else, and
+`--uninstall` removes exactly what it installed and nothing else.
+
+**A Flatpak, built from a checkout.** `packaging/flatpak/build.sh` builds and
+installs it. The first run downloads four things — the Builder, the runtime, the
+SDK and its Rust extension — so give it a while. Note that the AppImage, not the
+Flatpak, is the one to use for wrapping a gamescope launch on a desktop: a
+Flatpak can only see the X server that existed when it started, and gamescope's
+starts later.
+
+**Two update channels.** A release build updates to releases. A beta build
+updates to betas. You switch by installing the other one once — a release user
+who wants to try a beta downloads the beta AppImage and runs it, and a beta
+tester who wants to go back downloads a release AppImage and runs it. Each
+install follows its own channel from then on, and a release install is never
+offered a beta.
+
+## First run
+
+```
+wisp run
+```
+
+That starts the daemon and the overlay and follows them both; `Ctrl-C`, or
+`wisp stop` from another terminal, brings everything down.
+
+To have Wisp start with the game, use it as a launch option in Steam or Lutris —
+the same shape as `mangohud %command%`:
+
+```
+wisp run -- %command%
+```
+
+Wisp finds your log by itself if it can: it looks in the `Logs` directory of an
+EverQuest Legends install it can see and takes the newest `eqlog_*.txt` in it,
+and it picks up a log that appears later without a restart, so you can start
+Wisp before you log in. If it cannot find one, tell it where to look, once:
+
+```
+wisp config set logs_dir "/path/to/EverQuest Legends/Logs"
+```
+
+If anything is not working, run:
+
+```
+wisp doctor
+```
+
+It prints what a launch *would* do — see Troubleshooting below.
+
+## The HUD
+
+On screen you get the blocks you have placed: meters with a row per player and a
+bar per row, and the timer list with a draining bar per spell. Nothing is drawn
+until there is something to draw.
+
+### Moving things, on screen
+
+Press `ctrl+shift+grave` (the key above `Tab`). Every block gets a dashed
+outline and a name tag, the selected one gets a solid outline, and a help strip
+runs along the bottom of the screen:
 
 | Key | Action |
 |---|---|
 | `↑ ↓ ← →` | move the selected block by 4 px; with Shift, 24 px |
 | `Tab` / `Shift+Tab` | select the next / previous block |
-| `[` / `]` | a meter's `shows`: damage ↔ healing |
-| `F` | a meter's `segment`: fight ↔ session |
-| `+` / `-` | `rows` up or down by one |
-| `H` | toggle `hidden` |
-| `Esc`, or the chord again | save and exit |
+| `[` / `]` | a meter's contents: damage ↔ healing |
+| `F` | a meter's segment: fight ↔ session |
+| `+` / `-` | one more or one fewer row |
+| `H` | hide the block (it stays visible as a ghost here) |
+| `Esc`, or the chord again | save and leave |
 
-`Esc` and the chord both save the layout atomically and exit HUD mode.
+On KDE, Sway, Hyprland and river the overlay borrows the keyboard while you are
+in there, so the arrow keys move the block and not your character, and gives it
+back when you leave. Under gamescope and on the plain-window fallback it can
+only read the keyboard, so the keys reach the game as well — use the terminal
+commands below there instead.
 
-On a layer-shell compositor (KDE, Sway, Hyprland, river) the HUD asks for the
-keyboard for as long as HUD mode lasts, so the arrow keys move the block and
-**not** the character; the compositor gives focus back on exit. If it will not
-— `wisp-hud` says so, once — the keys behave as they do on X11. Under
-gamescope and on the plain-window backend the HUD still only *reads* keyboard
-state and consumes nothing, so a HUD-mode key reaches the game as well;
-`wisp hud place` from a terminal is the leak-free way to arrange the layout
-there.
+### Moving things, from a terminal
 
-The arrows, `Tab`, `Esc` and `Shift` are the same key on any layout. `F`, `H`,
-`[` and `]` are physical positions — the keys under those caps on a US layout
-— which is what the help strip along the bottom of the screen is for.
-
-### Editing the layout from a terminal — `wisp hud`
-
-For setup beside the game, or from a script. Every verb edits the config file
-and exits; a running HUD picks the change up through live reload within half
-a second — nothing talks to it over a socket.
+Every one of these edits the config file and exits; a running overlay picks the
+change up within half a second.
 
 | Command | Effect |
 |---|---|
-| `wisp hud` | lists the blocks: index, kind, shows, segment, anchor, offset, width, rows, hidden; then `scale`, `chord` and `output` |
+| `wisp hud` | lists the blocks: index, kind, contents, segment, anchor, offset, width, rows, hidden; then scale, chord and output |
 | `wisp hud place <n> <anchor> <x> <y>` | sets a block's anchor and offset |
 | `wisp hud nudge <n> <dx> <dy>` | moves a block by a pixel delta |
-| `wisp hud set <n> <key> <value>` | any block key (`shows`, `segment`, `width`, `rows`, `hidden`) |
-| `wisp hud add meter\|timers` / `wisp hud remove <n>` | adds or removes an instance |
-| `wisp hud scale <x>` | sets `hud.scale` |
-| `wisp hud output <name>\|auto` | sets `hud.output` to a monitor `wisp doctor` lists, or removes it |
+| `wisp hud set <n> <key> <value>` | any block key: `shows`, `segment`, `width`, `rows`, `hidden` |
+| `wisp hud add meter\|timers` / `wisp hud remove <n>` | adds or removes a block |
+| `wisp hud scale <factor>` | makes everything bigger or smaller |
+| `wisp hud output <name>\|auto` | which monitor to draw on, by the name `wisp doctor` lists |
 
 ### The config file
 
-TOML, read with the `toml` crate. The HUD polls the file's mtime every
-500 ms and re-lays out on change; a file that fails to parse is reported once
-on stderr and the last good layout stays up.
+`wisp config path` prints where it is. It is TOML, and it looks like this:
 
 ```toml
-log = "/mnt/.../eqlog_Daggo_freeport.txt"   # or logs_dir; as in Spec 4
+log = "/mnt/games/everquest/Logs/eqlog_Daggo_freeport.txt"
 backend = "gamescope"
 
 [hud]
-scale = 1.0          # multiplies every size
+scale = 1.0                  # multiplies every size
 chord = "ctrl+shift+grave"
-output = "DP-1"      # layer-shell only: which wl_output; absent = compositor's choice
+output = "DP-1"              # which monitor; leave it out for the default
 
 [[block]]
 kind = "meter"
-shows = "damage"     # damage | healing
-segment = "fight"    # fight | session
+shows = "damage"             # damage | healing
+segment = "fight"            # fight | session
 anchor = "top-left"
 offset = [20, 120]
 width = 290
 rows = 8
-
-[[block]]
-kind = "meter"
-shows = "healing"
-segment = "fight"
-anchor = "top-left"
-offset = [20, 400]
-width = 290
-rows = 4
-hidden = true
 
 [[block]]
 kind = "timers"
@@ -195,107 +193,73 @@ rows = 12
 
 | Command | Effect |
 |---|---|
-| `wisp run` | starts the daemon and the HUD, and follows them; `wisp run -- <command>` wraps a launch |
-| `wisp stop` | asks a running daemon to stop; the HUD and the launcher go with it, and a wrapped game does not. Nothing listening is a clean exit and one line |
-| `wisp status` | one snapshot as text, `--json` for the line the daemon sent. `log time:` is the last line's timestamp; `log:` is the file being tailed |
-| `wisp doctor` | what a launch *would* do: the config path, which log it resolved and how, the spell files, the backend and why |
+| `wisp run` | starts the daemon and the overlay and follows them; `wisp run -- <command>` wraps a launch |
+| `wisp stop` | asks a running daemon to stop; the overlay and the launcher go with it, and a wrapped game does not. Nothing running is a clean exit and one line |
+| `wisp status` | one snapshot as text, `--json` for the raw line |
+| `wisp doctor` | what a launch would do |
 | `wisp config path \| show \| set <key> <value>` | the config file |
 | `wisp hud …` | the layout, from a terminal — see above |
-| `wisp version` | the version, which is also what Gear Lever shows |
+| `wisp version` | the version |
 
-While Wisp is running there is a wisp in the system tray, on any desktop with
-a StatusNotifierItem host — Plasma, GNOME with the AppIndicator extension,
-every wlroots bar. Its menu carries a status line (`Wisp 0.3.0 ·
-eqlog_Daggo_freeport.txt · fighting 42 s`), a **HUD mode** checkbox that does
+The tray icon's menu carries a status line, a **HUD mode** checkbox that does
 exactly what the chord does, **Open config**, and **Stop Wisp**. Left-clicking
-the icon toggles HUD mode. Where there is no host — gamescope's game mode, a
-bare `Xvfb` — `wisp-hud` prints one `no tray:` line and carries on.
+the icon toggles HUD mode. The colour of the wisp says what is happening:
 
-## Installing
+| Colour | Means |
+|---|---|
+| Grey | running, with no log to read yet — the game has not been logged into, or `logs_dir` is pointing somewhere empty |
+| Green | reading the log, out of combat |
+| Bright green | in a fight |
+| Red | your config file's layout will not parse, so the on-screen editor is refused; `wisp hud` says what is wrong with it |
 
-Two prebuilt artifacts — the tarball and the AppImage — plus a local Flatpak
-build, which compiles the workspace with cargo inside the SDK and needs the
-repository checked out:
+Where there is no tray at all — gamescope's game mode, a bare test display —
+Wisp prints one line saying so and carries on.
 
-- **Tarball + `install.sh`.** Download `wisp-<version>-x86_64-linux.tar.gz`
-  from a release, extract it, and run `./install.sh`. It installs the three
-  binaries and the desktop entry, icon and metainfo under `~/.local` by
-  default; `--prefix <dir>` installs elsewhere, and `--uninstall` removes
-  exactly what was installed and nothing else.
-- **AppImage.** Download `Wisp-<version>-x86_64.AppImage`, `chmod +x` it, and
-  run it. It needs the kernel's FUSE interface (`/dev/fuse`), not the
-  `libfuse2` package; where FUSE isn't available, `--appimage-extract-and-run`
-  (or `APPIMAGE_EXTRACT_AND_RUN=1`) runs it without mounting at all.
-- **Flatpak, built locally from a checkout.** `packaging/flatpak/build.sh`
-  builds and installs it with `flatpak-builder`. The first run downloads
-  `org.flatpak.Builder` itself plus the `org.freedesktop.Platform` and `Sdk`
-  25.08 and the `rust-stable` extension — four downloads, since none of them
-  is installed on a fresh machine.
+## Troubleshooting
 
-Releases are cut with `packaging/cut-release.sh` and come in two channels —
-live and beta — which decide what an installed AppImage is offered next.
-[`docs/RELEASING.md`](docs/RELEASING.md) is the whole of it.
+`wisp doctor` prints eight lines, and between them they explain almost
+everything:
 
-First run, whichever artifact you used:
+| Line | What to look at |
+|---|---|
+| `version:` | which build you are running |
+| `config:` | where the config file is, and whether it exists |
+| `log:` | which log file was resolved and how — this is the one that is usually wrong |
+| `spells:` | whether the client's spell files were found; without them, timers are off |
+| `socket:` | whether a daemon is already running |
+| `scale:` | the size multiplier, and where it came from |
+| `backend:` | which overlay mechanism was chosen, and why |
+| `outputs:` | the monitors it can see, by the names `wisp hud output` accepts |
 
-```
-wisp config set logs_dir <the game's Logs directory>
-wisp run
-```
+**"log: none", or nothing ever appears.** The game writes a log only when
+logging is switched on in the client: `/log on` in game, once per character.
+Until a log exists there is nothing to read, and the tray wisp stays grey. Once
+the file appears Wisp picks it up without a restart.
 
-With the AppImage, `wisp` isn't on `PATH` — substitute its own path for
-`wisp` in both commands: `./Wisp-<version>-x86_64.AppImage config set logs_dir …`
-then `./Wisp-<version>-x86_64.AppImage run`.
+**The overlay is on the wrong monitor.** `wisp doctor`'s `outputs:` line lists
+what it can see; `wisp hud output DP-1` pins it to one of them, and
+`wisp hud output auto` hands the choice back to the compositor. This only
+applies on KDE, Sway, Hyprland and river; under gamescope there is one screen
+and nothing to choose.
 
-`wisp run -- %command%` works as a Steam or Lutris launch option, the same
-convention `mangohud %command%` uses. If it doesn't work, run `wisp doctor`
-— it reports the config path, which log it resolved and how, whether the
-client's spell files were found, and which overlay backend it would choose
-and why.
+**The editor's keys are also moving my character.** That is gamescope and the
+plain-window fallback: there, the overlay can only read the keyboard, never take
+it. Use `wisp hud place`, `wisp hud nudge` and `wisp hud set` from a terminal
+instead — they do everything the on-screen editor does.
 
-**The AppImage, not the Flatpak, is the artifact for wrapping a gamescope
-launch on the desktop.** A Flatpak's `--socket=x11` binds in only the X11
-socket named by `DISPLAY` at launch, so it can never follow an XWayland that
-starts later — such as gamescope's, when the game launches after the
-Flatpak does. On a handheld Game Mode session `DISPLAY` is already
-gamescope's from the start, so the Flatpak is natural there instead.
+**The old icon is still in my menu.** Plasma caches icons by name. `kbuildsycoca6`
+rebuilds the cache; logging out does it too.
 
-## Status
+**Timers never appear.** `wisp doctor`'s `spells:` line will say why. Wisp reads
+the spell tables out of your own EverQuest Legends install at runtime and never
+ships them; if your install is somewhere unusual, `wisp doctor --spells <dir>`
+tries a directory and tells you what it found there.
 
-| Spec | Subject | State |
-|---|---|---|
-| 0 | [Clean-room charter](docs/specs/2026-09-08-clean-room-charter.md) | Approved |
-| 1 | [The spine — ingest, IPC, overlay on screen](docs/specs/2026-09-08-spec-1-the-spine.md) | Implemented — verified live over EverQuest under gamescope on the desktop; handheld pending · [implementation plan](docs/plans/2026-09-08-spec-1-the-spine.md) |
-| 2 | [Timers — countdown rows for spells landed on mobs](docs/specs/2026-09-08-spec-2-timers.md) | Implemented — verified live over EverQuest on the desktop (mez timer: row on landing, warning at 10 s, critical at 5 s, cleared at expiry) · [implementation plan](docs/plans/2026-09-08-spec-2-timers.md) |
-| 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — verified live over EverQuest on the desktop (personal line tracking DPS, group rows without you); close, linger, zoning and HUD restart not specifically exercised · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
-| 4 | [Packaging and distribution](docs/specs/2026-09-09-spec-4-packaging.md) | Implemented — build, test, clippy, the musl static build, `packaging/release.sh` and the local Flatpak build verified locally; the first CI run on a pushed tag, the Flatpak's live checks against the game, and Milestone 6 (live over EverQuest Legends on the desktop) pending JDS300 · [implementation plan](docs/plans/2026-09-09-spec-4-packaging.md) |
-| 5 | [The HUD — Console look, keyboard layout mode, TOML config](docs/specs/2026-09-10-spec-5-the-hud.md) | Implemented, automated gates green — Milestone 4 (HUD mode over the running game) and Milestone 7 (live verification) pending JDS300 · [implementation plan](docs/plans/2026-09-10-spec-5-the-hud.md) |
-| 6 | [Running it — `wisp stop`, the tray, release channels](docs/specs/2026-09-11-spec-6-running-it.md) | Implemented, automated gates green — Milestone 6 (the tray live on Plasma over the game), Milestone 8 (HUD mode owning the keyboard over the game), Milestone 9 (the gamescope keyboard-grab spike) and Milestone 10 (the delivery path end to end) pending JDS300 · [implementation plan](docs/plans/2026-09-11-spec-6-running-it.md) |
+## Where the rest is
 
-Spec 1's overlay backends and log parser are implemented and covered by
-automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and
-gamescope X11 backends live over EverQuest Legends on the desktop:** each
-ran the kill counter live above his gamescope session with
-`--force-grab-cursor`, mouse-look unaffected. **Plain-window click-through
-and handheld (Steam Deck / Legion Go S) support remain claimed but
-unverified** — see `PROVENANCE.md` for exactly what was and was not
-verified, and how. Launching `wisp-hud` from the desktop with no flags
-selects layer-shell; to use the gamescope backend instead, find gamescope's
-own XWayland with `pgrep -a Xwayland` and launch `wisp-hud` with `DISPLAY`
-set to that number.
-
-Spec 3's group rows are limited to names the log has proven are in your
-group; you are never one of them, since your own numbers are the personal
-line above them.
-
-## Provenance
-
-Wisp is an independent project. It is **not** a fork, and it carries no code
-from any other EverQuest tool. [`PROVENANCE.md`](PROVENANCE.md) records exactly
-what moved into this repository, from where, and on what basis — written as the
-work happens rather than reconstructed afterwards.
-
-## Licence
+- [`docs/STATUS.md`](docs/STATUS.md) — what is built, what has been verified, and how.
+- [the specs directory](docs/specs/) — the design documents, one per piece of the program.
+- [`docs/RELEASING.md`](docs/RELEASING.md) — how a release is cut, and what the two channels mean.
 
 [MIT](LICENSE). Use it for anything.
 

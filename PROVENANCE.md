@@ -814,3 +814,32 @@ this repository's own `packaging/io.github.jds300.Wisp.svg` by
 `cargo metadata` says its `[package] license` field is `Unlicense`; the spec
 text and `THIRD_PARTY.md` are both corrected, and the spec records what was
 believed at design time alongside what the tooling reports.
+
+### 2026-09-12 — the design sheet, and the README split
+
+**One file entered the repository.** `docs/art/wisp-sheet.jpeg` is a design
+sheet JDS300 generated on 2026-09-12 with Google's Gemini image model from his
+own prompt, added as `docs/Gemini_Generated_Image_hixntehixntehixn.jpeg` and
+moved to its present name. It is his, it is the only artwork in the project,
+and **every raster Wisp ships is cut from it** by
+`packaging/render-icons.sh` — the README banner, the eight launcher PNGs and
+the twenty tray pixmaps. No third-party artwork, no icon theme, no stock
+image. The hand-drawn `packaging/io.github.jds300.Wisp.svg` stays as the
+scalable icon and is unchanged.
+
+**This entry supersedes the 2026-09-11 entry's "The tray pixmaps"
+paragraph.** That paragraph described `tray-22.argb` and `tray-48.argb` as
+rendered from the SVG by `packaging/render-tray-icon.sh`; both that script
+and the two files it produced are gone, replaced by the sheet above and
+`packaging/render-icons.sh`'s twenty.
+
+**Consultation:** none under charter §5. The work read one dependency's own
+source — `ksni` 0.3.6 (`src/tray.rs` and `src/lib.rs`, for `Icon`'s fields and
+`Tray::icon_pixmap`'s contract) — which is ordinary use of a library one
+depends on, not consultation of another parser's expression, and is recorded
+here so the distinction stays on the record rather than being assumed.
+
+**The README was split, not rewritten away.** Its roadmap, its status table and
+its provenance note moved to `docs/STATUS.md` byte for byte; the README is now
+a page for someone installing Wisp, and the build record is one click away.
+Nothing was deleted.

@@ -104,6 +104,10 @@ install -m 0644 "$root/README.md" "$tar_root/README.md"
 install -m 0644 "$here/io.github.jds300.Wisp.desktop" "$tar_root/io.github.jds300.Wisp.desktop"
 install -m 0644 "$here/io.github.jds300.Wisp.svg" "$tar_root/io.github.jds300.Wisp.svg"
 install -m 0644 "$here/io.github.jds300.Wisp.metainfo.xml" "$tar_root/io.github.jds300.Wisp.metainfo.xml"
+for size in 512 256 128 64 48 32 24 16; do
+    install -D -m 0644 "$here/icons/hicolor/${size}x${size}/apps/io.github.jds300.Wisp.png" \
+        "$tar_root/icons/hicolor/${size}x${size}/apps/io.github.jds300.Wisp.png"
+done
 
 dist="$root/dist"
 mkdir -p "$dist"
@@ -138,9 +142,22 @@ grep -q "^X-AppImage-Version=${version}$" "$stage/appimage.desktop" || {
 install -m 0644 "$stage/appimage.desktop" "$appdir/io.github.jds300.Wisp.desktop"
 install -m 0644 "$stage/appimage.desktop" \
     "$appdir/usr/share/applications/io.github.jds300.Wisp.desktop"
-install -m 0644 "$here/io.github.jds300.Wisp.svg" "$appdir/io.github.jds300.Wisp.svg"
+# The scalable icon, as before, for desktops that ask for one.
 install -m 0644 "$here/io.github.jds300.Wisp.svg" \
     "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.jds300.Wisp.svg"
+# The eight rasters from the sheet, in the AppDir's own hicolor tree.
+for size in 512 256 128 64 48 32 24 16; do
+    install -D -m 0644 "$here/icons/hicolor/${size}x${size}/apps/io.github.jds300.Wisp.png" \
+        "$appdir/usr/share/icons/hicolor/${size}x${size}/apps/io.github.jds300.Wisp.png"
+done
+# The AppDir root icon, which appimagetool and Gear Lever read and which
+# becomes the AppImage's own icon. appimagetool takes one root icon and
+# prefers the raster when both a .png and a .svg are there; shipping only the
+# PNG removes the ambiguity rather than relying on how it is resolved. The
+# SVG is still installed, one directory down, where a scalable-icon desktop
+# finds it.
+install -m 0644 "$here/icons/hicolor/256x256/apps/io.github.jds300.Wisp.png" \
+    "$appdir/io.github.jds300.Wisp.png"
 install -m 0644 "$here/io.github.jds300.Wisp.metainfo.xml" \
     "$appdir/usr/share/metainfo/io.github.jds300.Wisp.metainfo.xml"
 
