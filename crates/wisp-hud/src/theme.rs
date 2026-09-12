@@ -9,7 +9,7 @@
 //! `Theme::at(scale)` does the multiplying once; every other file just reads
 //! fields.
 
-use crate::draw::Rgba;
+use crate::draw::{Face, Fonts, Rgba};
 use wisp_proto::{DamageType, TimerKind};
 
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +30,14 @@ pub struct Theme {
     pub header_px: f32,     // 12
     pub target_px: f32,     // 11.5
     pub kind_px: f32,       // 10.5
+    // The advance a target group's label actually takes: `model.rs`'s
+    // `block_height` and `paint.rs`'s `draw_panel` must read the very same
+    // number here or one budgets a row position the other doesn't draw at
+    // (beta.5 fix B). `at()` falls back to `target_px.ceil()` -- the old,
+    // too-small budget -- for a `Theme` built with no `Fonts` at hand;
+    // `with_fonts` overwrites it with the real ascent+descent DejaVu Sans
+    // reports at `target_px`, and every real render path calls it.
+    pub label_line_h: u32,
     pub nudge: i32,         // 4 (HUD mode arrow step; also the halo's outward offset)
     // 24 (HUD mode arrow step with Shift). `HudMode::handle` takes its own
     // unscaled 4/24 (main.rs's NUDGE/SHIFT_NUDGE) rather than these two --
@@ -79,6 +87,7 @@ impl Theme {
     pub fn at(scale: f32) -> Theme {
         let size = |v: f32| (v * scale).round() as u32;
         let signed = |v: f32| (v * scale).round() as i32;
+        let target_px = 11.5 * scale;
         Theme {
             scale,
             row_h: size(24.0),
@@ -93,8 +102,12 @@ impl Theme {
             text_px: 13.0 * scale,
             number_px: 12.5 * scale,
             header_px: 12.0 * scale,
-            target_px: 11.5 * scale,
+            target_px,
             kind_px: 10.5 * scale,
+            // No `Fonts` at hand here -- `with_fonts` is the real answer and
+            // every render path calls it; this fallback only keeps a
+            // fonts-less `Theme::at` (most of this crate's own tests) usable.
+            label_line_h: target_px.ceil() as u32,
             nudge: signed(4.0),
             shift_nudge: signed(24.0),
             outline_offset: size(3.0),
@@ -124,6 +137,17 @@ impl Theme {
             ghost_text: Rgba::rgba(0xffffff, 0.45),
             tag_bg: Rgba::rgba(0x080a0e, 0.85),
         }
+    }
+
+    /// Recomputes `label_line_h` from `fonts`' real metrics at `target_px`,
+    /// so `model::block_height`'s row budget and `draw_panel`'s actual line
+    /// advance are the same number and can never drift apart again. Call
+    /// once, right after loading the fonts (`main.rs` does; a test that
+    /// paints a Timers block with group labels should too).
+    pub fn with_fonts(mut self, fonts: &Fonts) -> Theme {
+        let (ascent, descent) = crate::draw::line_metrics(fonts, Face::Sans, self.target_px);
+        self.label_line_h = ascent + descent;
+        self
     }
 
     /// The kind palette (pastel), §4.2: a `dot`'s colour comes from its

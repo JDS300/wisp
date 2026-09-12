@@ -34,20 +34,27 @@ pub fn paint(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, views: &[BlockVi
         canvas.clear(*r);
     }
 
+    // What each view's own draw call actually painted into -- `view.rect`
+    // for a hidden one (its ghost, if any, stays inside it), or `draw_panel`'s
+    // returned extent otherwise. Fix B: this is deliberately not just
+    // `view.rect` for every view, so a block whose content overflows its
+    // budgeted rect still gets erased in full next frame.
+    let mut touched: Vec<Rect> = Vec::with_capacity(views.len());
     for view in views {
         if view.hidden {
             if hud_mode.is_some() {
                 draw_ghost(canvas, fonts, theme, view);
             }
+            touched.push(view.rect);
             continue;
         }
-        draw_panel(canvas, fonts, theme, view);
+        touched.push(draw_panel(canvas, fonts, theme, view));
     }
 
     let mut erase: Vec<Rect> = Vec::with_capacity(views.len() + 1);
     match &hud_mode {
         Some(hud) => {
-            for view in views {
+            for (view, view_touched) in views.iter().zip(&touched) {
                 // A hidden block's ghost is drawn inside its own rect and
                 // carries no chrome, so the rect is the whole of it.
                 if view.hidden {
@@ -55,14 +62,14 @@ pub fn paint(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, views: &[BlockVi
                     continue;
                 }
                 let chrome = draw_hud_outline(canvas, fonts, theme, view, view.index == hud.selected);
-                erase.push(view.rect.union(chrome));
+                erase.push(view_touched.union(chrome));
             }
             erase.push(draw_help(canvas, fonts, theme, hud.help));
         }
         // Outside HUD mode a hidden block draws nothing, so there is nothing
         // of its own to clear next frame; whatever it left behind is cleared
         // by *this* frame, out of the rects the last one returned.
-        None => erase.extend(views.iter().filter(|view| !view.hidden).map(|view| view.rect)),
+        None => erase.extend(views.iter().zip(&touched).filter(|(view, _)| !view.hidden).map(|(_, t)| *t)),
     }
     erase
 }
@@ -84,7 +91,15 @@ fn header_height(theme: &Theme) -> u32 {
     theme.header_px.ceil() as u32 + 2 * theme.header_pad_y
 }
 
-fn draw_panel(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockView) {
+/// Draws one block's panel and returns the rect it actually painted into.
+///
+/// That's `view.rect` unioned with wherever the row loop below actually
+/// reached -- ordinarily the same rect, since `model::block_height` budgets
+/// exactly what this function draws, but a second line of defence for Fix
+/// B: if that budget and this advance ever drift apart again, the caller's
+/// erase set still covers whatever was really drawn, not just what was
+/// supposed to be.
+fn draw_panel(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockView) -> Rect {
     let rect = view.rect;
     canvas.fill_rect(rect, theme.panel, theme.radius);
     canvas.stroke_rect(rect, theme.panel_border, theme.border, None);
@@ -103,8 +118,14 @@ fn draw_panel(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockVie
             y += theme.group_gap as i32;
             let label_style = style(Face::Sans, theme.target_px, theme.target_text);
             let (ascent, descent) = crate::draw::line_metrics(fonts, Face::Sans, theme.target_px);
+            debug_assert_eq!(
+                ascent + descent,
+                theme.label_line_h,
+                "Theme::with_fonts must be built from the same Fonts draw_panel is using, \
+                 or model::block_height's budget and this advance drift apart again"
+            );
             canvas.text(fonts, rect.x + theme.pad_x as i32, y + ascent as i32, label, label_style);
-            y += (ascent + descent) as i32;
+            y += theme.label_line_h as i32;
         }
         for row in &group.rows {
             let row_rect = Rect::new(rect.x, y, rect.w, theme.row_h);
@@ -112,6 +133,8 @@ fn draw_panel(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, view: &BlockVie
             y += (theme.row_h + theme.row_gap) as i32;
         }
     }
+
+    rect.union(Rect::new(rect.x, rect.y, rect.w, (y - rect.y).max(0) as u32))
 }
 
 fn draw_row(canvas: &mut Canvas, fonts: &Fonts, theme: &Theme, rect: Rect, row: &Row) {
@@ -410,6 +433,71 @@ mod tests {
             assert!(rect.contains(x, y), "({x}, {y}) is outside the block and still painted");
         }
         assert_eq!(erase, vec![rect], "outside HUD mode the block's own rect is the whole erase set");
+    }
+
+    /// The shape `model::build_timers` produces for one group per timer:
+    /// each group is labelled by its target and carries a single row.
+    fn timers_view(rect: Rect, groups: usize) -> BlockView {
+        BlockView {
+            index: 1,
+            kind: BlockKind::Timers,
+            hidden: false,
+            rect,
+            title: "Timers".to_string(),
+            right: groups.to_string(),
+            tag: "timers".to_string(),
+            groups: (0..groups)
+                .map(|i| Group {
+                    label: Some(format!("target {i}")),
+                    rows: vec![Row {
+                        name: "Turgur's Insects".to_string(),
+                        tag: Some("slow".to_string()),
+                        numbers: vec![Number { text: "12s".to_string(), bold: false }],
+                        number_colour: None,
+                        fill: 0.6,
+                        // The colour in JDS300's screenshot of the overhang.
+                        bar: Rgba::rgb(0x82aaff),
+                        state: RowState::Normal,
+                        you: false,
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    /// `outer` fully covers `inner` on all four edges.
+    fn contains_rect(outer: Rect, inner: Rect) -> bool {
+        inner.x >= outer.x
+            && inner.y >= outer.y
+            && inner.x + inner.w as i32 <= outer.x + outer.w as i32
+            && inner.y + inner.h as i32 <= outer.y + outer.h as i32
+    }
+
+    /// Beta.5 fix B: `model::block_height` budgeted each target group's
+    /// label as `group_gap + target_px.ceil()`, but `draw_panel` advances by
+    /// `group_gap + (ascent + descent)` from the real font metrics, which is
+    /// taller for DejaVu Sans at 11.5px. Three groups pushed the rows down
+    /// by three times the difference, and the last row's bar hung below
+    /// `view.rect` -- which `paint()` never erases, since it only clears
+    /// `view.rect` from the previous frame. Every dirty pixel this paint
+    /// touches must land inside the rect the model handed it.
+    #[test]
+    fn timers_rows_never_overflow_the_blocks_rect() {
+        let theme = Theme::at(1.0).with_fonts(&Fonts::embedded());
+        let fonts = Fonts::embedded();
+        let groups = 3;
+        let height = crate::model::block_height(&theme, BlockKind::Timers, groups as u32, groups as u32);
+        let rect = Rect::new(20, 40, 240, height);
+        let view = timers_view(rect, groups);
+        let mut canvas = Canvas::new(400, 400);
+
+        let _ = paint(&mut canvas, &fonts, &theme, std::slice::from_ref(&view), &[], None);
+        let dirty = canvas.take_dirty();
+
+        assert!(!dirty.is_empty(), "the panel must have drawn something");
+        for d in &dirty {
+            assert!(contains_rect(view.rect, *d), "dirty rect {d:?} escapes the block's own rect {:?}", view.rect);
+        }
     }
 
     #[test]

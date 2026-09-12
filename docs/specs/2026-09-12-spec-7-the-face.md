@@ -169,6 +169,30 @@ diff rule — "nudge the updater only when what the tray shows changed" —
 covers the icon without a second rule. The status line's `idle`/`fighting`
 words are unchanged; the icon says the same thing at a glance.
 
+**Correction, 2026-09-12 (beta.5 defect fix, same day).** The paragraph
+above is wrong and is left in place, struck through in spirit, so the
+record shows what was actually shipped in beta.4 and why it changed:
+`icon_name` returning `ITEM_ID` was never a harmless fallback. The
+StatusNotifierItem spec leaves the choice to the host, and Plasma's SNI
+watcher resolves a non-empty `IconName` against the icon theme *whenever
+that name resolves*, falling back to `IconPixmap` only when it does not.
+`io.github.jds300.Wisp` is exactly the name a tarball install's
+`hicolor/*/apps/io.github.jds300.Wisp.png`, the AppImage's own icon, and
+the Flatpak's exported icon all register under (§4.1) — so on every install
+that matters the name always resolved, and JDS300's Plasma panel showed the
+static launcher tile for the lifetime of the process, never the four live
+states this section exists to add. It went unnoticed through review and
+Milestone 5 because the box that first ran it had a leftover test Flatpak
+installed whose export tree happened to be stale, so Plasma fell through to
+`IconPixmap` there by accident and the four states appeared to work.
+
+The fix (beta.5): `icon_name` is no longer overridden and returns ksni's
+default, an empty string, so `IconName` is always `""` and every SNI host
+falls straight to `IconPixmap`. `id()` — the well-known bus name and the
+desktop-file match — is unchanged; only the *icon* lookup stops naming a
+theme entry. `icon_pixmap` and everything below this paragraph stands as
+designed.
+
 There is no state for "the daemon is gone": the HUD exits when the socket
 closes, and the item leaves the bus with it.
 
