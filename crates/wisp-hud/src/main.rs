@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("wisp-hud: backend {kind:?}, scale {scale:.2}");
 
     let mut layout = config.layout().clone();
-    let theme = Theme::at(scale);
+    let mut theme = Theme::at(scale);
 
     // Every backend sizes its own surface to the output; none of them take a
     // width or height (Task 6). `hud.output` names which output that is:
@@ -113,6 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut canvas = draw::Canvas::new(screen.0, screen.1);
     let fonts = draw::Fonts::embedded();
+    // The real font metrics, not `Theme::at`'s fonts-less fallback: this is
+    // what makes `model::block_height`'s row budget and `paint::draw_panel`'s
+    // actual advance the same number (beta.5 fix B).
+    theme = theme.with_fonts(&fonts);
 
     // After the backend is up and before the first frame, so a tray that
     // cannot register has said so before anything is drawn.

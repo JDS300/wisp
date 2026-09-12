@@ -127,7 +127,11 @@ pub fn block_height(theme: &Theme, kind: BlockKind, rows: u32, groups: u32) -> u
     let header = theme.header_px.ceil() as u32 + 2 * theme.header_pad_y;
     let rows_h = rows * (theme.row_h + theme.row_gap);
     let labels_h = match kind {
-        BlockKind::Timers => groups * (theme.group_gap + theme.target_px.ceil() as u32),
+        // `theme.label_line_h`, not `target_px.ceil()`: `draw_panel` in
+        // paint.rs advances by the same field, and the two must always
+        // agree (beta.5 fix B) or a target group's rows are budgeted a
+        // shorter box than the painter actually draws into.
+        BlockKind::Timers => groups * (theme.group_gap + theme.label_line_h),
         BlockKind::Meter => 0,
     };
     header + rows_h + labels_h + theme.row_inset
@@ -622,6 +626,38 @@ mod tests {
             ("You", "2100", "84")
         );
         assert_eq!(v[0].title, "Damage · session");
+    }
+
+    /// Beta.5 fix B: `block_height` used to budget a target group's label as
+    /// `group_gap + target_px.ceil()`, but `paint.rs`'s `draw_panel` advances
+    /// by `group_gap + (ascent + descent)` from the real font metrics at
+    /// `target_px`, which for DejaVu Sans at 11.5 px is taller than
+    /// `ceil(11.5) == 12`. `Theme::label_line_h` is the one number both now
+    /// read, computed once from the real font in `Theme::with_fonts`.
+    #[test]
+    fn block_height_budgets_the_painters_own_label_line_height() {
+        let fonts = crate::draw::Fonts::embedded();
+        let theme = Theme::at(1.0).with_fonts(&fonts);
+
+        // The real metric must be what draw_panel actually uses -- not the
+        // old, too-small `target_px.ceil()` -- or this test would pass
+        // vacuously against the very bug it exists to catch.
+        let (ascent, descent) = crate::draw::line_metrics(&fonts, crate::draw::Face::Sans, theme.target_px);
+        assert_eq!(theme.label_line_h, ascent + descent);
+        assert_ne!(
+            theme.label_line_h,
+            theme.target_px.ceil() as u32,
+            "DejaVu Sans's real line height at 11.5px must differ from ceil(target_px), \
+             or this fixture no longer exercises the beta.4 defect"
+        );
+
+        let rows = 3;
+        let groups = 3;
+        let header = theme.header_px.ceil() as u32 + 2 * theme.header_pad_y;
+        let rows_h = rows * (theme.row_h + theme.row_gap);
+        let expected = header + rows_h + groups * (theme.group_gap + theme.label_line_h) + theme.row_inset;
+
+        assert_eq!(block_height(&theme, BlockKind::Timers, rows, groups), expected);
     }
 
     #[test]
