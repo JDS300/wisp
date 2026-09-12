@@ -81,6 +81,7 @@ pub fn status(json: bool) -> i32 {
 fn text(snapshot: &Snapshot) -> String {
     let mut out = String::new();
     field(&mut out, "log time:", &snapshot.ts);
+    field(&mut out, "log:", snapshot.log.as_deref().unwrap_or(""));
     field(&mut out, "lines:", &snapshot.lines_ingested.to_string());
     field(&mut out, "kills:", &snapshot.session_kills.to_string());
     // A count of 0 is followed by nothing at all: no heading, no placeholder, no
@@ -233,6 +234,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             seq: 1,
             ts: "Mon Aug 10 20:39:54 2026".to_string(),
+            log: Some("eqlog_Daggo_freeport.txt".to_string()),
             lines_ingested: 10432,
             session_kills: 7,
             timers: vec![
@@ -280,6 +282,7 @@ mod tests {
 
     const EVERY_FIELD: &str = "\
 log time:  Mon Aug 10 20:39:54 2026
+log:       eqlog_Daggo_freeport.txt
 lines:     10432
 kills:     7
 timers:    2
@@ -302,9 +305,22 @@ fight:     active, 0:42
         rankless.rank = 0;
         s.timers = vec![rankless];
         assert_eq!(
-            text(&s).lines().nth(4).unwrap(),
+            text(&s).lines().nth(5).unwrap(),
             "  a jeering gargoyle   Mesmerization      12s   measured   mez"
         );
+    }
+
+    #[test]
+    fn the_log_line_is_the_file_name_and_is_empty_when_there_is_none() {
+        let out = text(&snapshot());
+        assert!(out.contains("log:       eqlog_Daggo_freeport.txt\n"), "{out}");
+        assert_eq!(out.lines().nth(1).unwrap(), "log:       eqlog_Daggo_freeport.txt", "it sits under log time:");
+
+        let mut s = snapshot();
+        s.log = None;
+        let out = text(&s);
+        // `labelled` trims, so a daemon with no log leaves no trailing spaces.
+        assert!(out.contains("\nlog:\n"), "{out:?}");
     }
 
     #[test]

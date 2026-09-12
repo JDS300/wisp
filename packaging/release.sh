@@ -13,6 +13,20 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
+# Two channels, decided by the version string alone (spec §4.4). A version
+# with a prerelease suffix is a beta and its AppImage points at `latest-pre`,
+# which Gear Lever resolves to the newest non-draft release of any kind; a
+# plain version points at `latest`, which GitHub's own API resolves to the
+# newest non-prerelease. A live user is therefore never offered a beta.
+if [[ "$version" == *-* ]]; then
+    channel="beta"
+    update_channel="latest-pre"
+else
+    channel="live"
+    update_channel="latest"
+fi
+echo "release.sh: channel $channel ($update_channel)" >&2
+
 if ! command -v zsyncmake >/dev/null 2>&1; then
     echo "release.sh: zsyncmake not found (package: zsync); appimagetool -u writes no .zsync without it" >&2
     exit 1
@@ -136,7 +150,7 @@ export ARCH=x86_64
     cd "$dist"
     "$cache_dir/$appimagetool_file" \
         --runtime-file "$cache_dir/$runtime_file" \
-        -u "gh-releases-zsync|JDS300|wisp|latest|Wisp-*-x86_64.AppImage.zsync" \
+        -u "gh-releases-zsync|JDS300|wisp|${update_channel}|Wisp-*-x86_64.AppImage.zsync" \
         "$appdir" "$(basename "$appimage")" 1>&2
 )
 

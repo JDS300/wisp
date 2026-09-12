@@ -786,3 +786,31 @@ region, and never sets the Steam overlay atoms. `docs/specs/2026-09-08-spec-1-th
 carries a one-line amendment pointing to this rule; §3's own text is
 unchanged, since the rule it states was right all along and only the reason
 given for it needed correcting.
+
+### 2026-09-11 — Spec 6 implemented
+
+Nothing moved. Spec 6 is `wisp stop`, a system-tray item, HUD mode taking the
+keyboard on the layer shell, and two release channels; none of it touches a
+parsing or counting rule, and no file entered the repository from anywhere.
+
+**Consultation:** none under charter §5. The work read three dependencies'
+own documentation and source — `ksni` 0.3.6 (docs.rs and the published
+crate, for the `Tray` trait's items and the blocking spawn API),
+`smithay-client-toolkit` 0.21.1 (`src/seat/mod.rs` and `src/dispatch2.rs`,
+for how to bind a `wl_seat` without the `xkbcommon` feature) and
+`wayland-client` 0.31.15 (`wayland.xml`, for `wl_keyboard`'s events). Reading
+a library one depends on is ordinary use of that library, not consultation of
+another parser's expression, and it is recorded here so the distinction is on
+the record rather than assumed. The Gear Lever facts in Spec 6 §4.4 were read
+from Gear Lever's own Python source (`GithubUpdater.py`,
+`UpdateManagerChecker.py`) on 2026-09-11 — a fact about how an updater
+resolves a string, restated, with nothing copied.
+
+**The tray pixmaps** (`crates/wisp-hud/icons/tray-*.argb`) are rendered from
+this repository's own `packaging/io.github.jds300.Wisp.svg` by
+`packaging/render-tray-icon.sh`. No third-party artwork.
+
+**A licence correction.** Spec 6 §4.2 was designed believing `ksni` was MIT.
+`cargo metadata` says its `[package] license` field is `Unlicense`; the spec
+text and `THIRD_PARTY.md` are both corrected, and the spec records what was
+believed at design time alongside what the tooling reports.

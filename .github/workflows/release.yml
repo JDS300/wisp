@@ -60,6 +60,12 @@ jobs:
 
       - run: packaging/release.sh
 
+      # Both set explicitly on every release so neither can drift: a beta is
+      # a pre-release and never GitHub's "latest", whatever its tag sorts as.
+      # `make_latest` is a string input ("true"/"false"/"legacy"), so the
+      # expression produces one rather than a bare boolean.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') && 'true' || 'false' }}

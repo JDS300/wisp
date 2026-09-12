@@ -13,7 +13,15 @@ use std::fmt;
 /// Bumped whenever the snapshot shape changes incompatibly.
 /// 1: Spec 1 counters. 2: Spec 2 adds `timers`. 3: Spec 3 adds `encounter`.
 /// 4: Spec 5 adds the `slow` kind and `damage_type` on a `dot`.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 5: Spec 6 adds `log`, the name of the file being tailed.
+pub const PROTOCOL_VERSION: u32 = 5;
+
+/// The one line a client may write back to the daemon, newline-terminated:
+/// `stop`. Not JSON, because it is the only request there is, it has to be
+/// typeable into `socat`, and a JSON object would suggest a request
+/// vocabulary Spec 6 is not opening. Anything else a client writes is
+/// ignored — see `wispd::server::Server::poll_requests`.
+pub const STOP_LINE: &str = "stop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -156,6 +164,12 @@ pub struct Snapshot {
     /// Raw timestamp text from the last consumed log line, e.g.
     /// `Mon Aug 10 20:39:54 2026`. Never parsed, never relabelled.
     pub ts: String,
+    /// The *file name* of the log being tailed — never the path, because the
+    /// socket is readable by the whole session and a path says where the
+    /// game is installed. `None` while the daemon is waiting for a log, and
+    /// under `--stub`. Absent on v4 and earlier lines.
+    #[serde(default)]
+    pub log: Option<String>,
     pub lines_ingested: u64,
     pub session_kills: u64,
     /// Active timers, soonest expiry first, at most 16. Absent on v1 lines.
@@ -222,6 +236,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             seq: 42,
             ts: "Mon Aug 10 20:39:54 2026".to_string(),
+            log: None,
             lines_ingested: 10432,
             session_kills: 7,
             timers: Vec::new(),
@@ -253,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_missing_encounter_decodes_as_none_and_none_encodes_as_null() {
-        let line = r#"{"v":4,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
+        let line = r#"{"v":5,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
         assert_eq!(decode(line).unwrap().encounter, None);
         assert!(encode(&sample()).contains(r#""encounter":null"#));
     }
@@ -262,7 +277,7 @@ mod tests {
     fn a_v2_line_is_refused_by_version() {
         let v2 = r#"{"v":2,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
         match decode(v2) {
-            Err(ProtoError::Version { found: 2, expected: 4 }) => {}
+            Err(ProtoError::Version { found: 2, expected: 5 }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }
@@ -313,13 +328,13 @@ mod tests {
     }
 
     #[test]
-    fn a_v4_line_without_the_field_decodes_to_none_and_v3_is_refused() {
-        let line = r#"{"v":4,"seq":1,"ts":"","lines_ingested":0,"session_kills":0,"timers":[{"target":"a rat","spell":"Slow","rank":0,"kind":"slow","remaining_ms":1000,"duration_ms":2000,"confidence":"measured"}]}"#;
+    fn a_v5_line_without_the_damage_type_decodes_to_none_and_v4_is_refused() {
+        let line = r#"{"v":5,"seq":1,"ts":"","lines_ingested":0,"session_kills":0,"timers":[{"target":"a rat","spell":"Slow","rank":0,"kind":"slow","remaining_ms":1000,"duration_ms":2000,"confidence":"measured"}]}"#;
         let s = decode(line).unwrap();
         assert_eq!(s.timers[0].kind, TimerKind::Slow);
         assert_eq!(s.timers[0].damage_type, None);
-        let v3 = line.replacen(r#""v":4"#, r#""v":3"#, 1);
-        assert!(matches!(decode(&v3), Err(ProtoError::Version { found: 3, expected: 4 })));
+        let v4 = line.replacen(r#""v":5"#, r#""v":4"#, 1);
+        assert!(matches!(decode(&v4), Err(ProtoError::Version { found: 4, expected: 5 })));
     }
 
     #[test]
@@ -341,7 +356,7 @@ mod tests {
     fn a_v1_line_is_refused_by_version_not_by_shape() {
         let v1 = r#"{"v":1,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0}"#;
         match decode(v1) {
-            Err(ProtoError::Version { found: 1, expected: 4 }) => {}
+            Err(ProtoError::Version { found: 1, expected: 5 }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }
@@ -382,5 +397,29 @@ mod tests {
         let s = sample();
         let decoded = decode(&encode(&s)).unwrap();
         assert_eq!(decoded.ts, "Mon Aug 10 20:39:54 2026");
+    }
+
+    #[test]
+    fn the_log_name_round_trips_and_none_is_null_on_the_wire() {
+        let mut s = sample();
+        s.log = Some("eqlog_Daggo_freeport.txt".to_string());
+        let line = encode(&s);
+        assert!(line.contains(r#""log":"eqlog_Daggo_freeport.txt""#), "{line}");
+        assert_eq!(decode(&line).unwrap().log.as_deref(), Some("eqlog_Daggo_freeport.txt"));
+        assert!(encode(&sample()).contains(r#""log":null"#), "a daemon with no log says so");
+    }
+
+    #[test]
+    fn a_v5_line_without_the_log_key_decodes_to_none_and_v4_is_refused() {
+        let line = r#"{"v":5,"seq":1,"ts":"x","lines_ingested":0,"session_kills":0,"timers":[]}"#;
+        assert_eq!(decode(line).unwrap().log, None);
+        let v4 = line.replacen(r#""v":5"#, r#""v":4"#, 1);
+        assert!(matches!(decode(&v4), Err(ProtoError::Version { found: 4, expected: 5 })));
+    }
+
+    #[test]
+    fn the_stop_line_is_one_bare_word() {
+        assert_eq!(STOP_LINE, "stop");
+        assert!(!STOP_LINE.contains('\n'), "the newline belongs to the writer, not the constant");
     }
 }

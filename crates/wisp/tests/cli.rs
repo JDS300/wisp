@@ -439,7 +439,7 @@ fn version_prints_wisp_and_the_crate_version() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn status_json_against_a_stub_daemon_is_one_v4_line() {
+fn status_json_against_a_stub_daemon_is_one_v5_line() {
     let s = scratch("status-json");
     let _daemon = s.stub_daemon();
 
@@ -449,7 +449,7 @@ fn status_json_against_a_stub_daemon_is_one_v4_line() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "one snapshot, one line: {stdout}");
     let snapshot = wisp_proto::decode(lines[0]).expect("a line the codec accepts");
-    assert_eq!(snapshot.v, 4);
+    assert_eq!(snapshot.v, 5);
     assert_eq!(snapshot.v, wisp_proto::PROTOCOL_VERSION);
 
     // The text form of the same daemon names the fields rather than the JSON.
@@ -459,6 +459,7 @@ fn status_json_against_a_stub_daemon_is_one_v4_line() {
     for label in ["log time:", "lines:", "kills:", "timers:", "fight:"] {
         assert!(stdout.contains(label), "{stdout}");
     }
+    assert!(stdout.contains("log:"), "the text form names the log line: {stdout}");
     assert!(!stdout.contains('{'), "the text form is not JSON: {stdout}");
 }
 
@@ -572,6 +573,97 @@ fn a_dying_wisp_child_leaves_the_command_running() {
     assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
     assert!(stderr.contains("wispd"), "it says which child died: {stderr}");
     // The other Wisp child went with it, and nothing of this test's survives.
+    assert!(s.procs().is_empty(), "left behind: {:?}", s.procs());
+}
+
+// ---------------------------------------------------------------------------
+// stop
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_against_a_stub_daemon_exits_0_and_leaves_nothing_behind() {
+    let s = scratch("stop-stub");
+    let mut daemon = s.stub_daemon();
+
+    let started = Instant::now();
+    let out = s.command(&wisp()).arg("stop").output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty(), "a stop that worked says nothing");
+    assert!(String::from_utf8_lossy(&out.stderr).is_empty(), "nor on stderr");
+    // The acknowledgement is the close, so this cannot be a five-second wait.
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+
+    assert_eq!(daemon.wait_within(TIMEOUT).code(), Some(0), "the daemon exits cleanly");
+    assert!(daemon.stderr().contains("wispd: stop requested"), "{}", daemon.stderr());
+    assert!(!s.socket().exists(), "the socket file is gone");
+    assert!(s.procs().is_empty(), "left behind: {:?}", s.procs());
+}
+
+#[test]
+fn stop_without_a_daemon_says_so_once_and_exits_0() {
+    let s = scratch("stop-nothing");
+    let out = s.command(&wisp()).arg("stop").output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "nothing to stop is a clean exit");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("wisp: nothing to stop: no daemon is listening on {}\n", s.socket().display())
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn stop_twice_is_idempotent() {
+    let s = scratch("stop-twice");
+    let mut daemon = s.stub_daemon();
+    assert_eq!(s.command(&wisp()).arg("stop").output().unwrap().status.code(), Some(0));
+    daemon.wait_within(TIMEOUT);
+
+    let out = s.command(&wisp()).arg("stop").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("wisp: nothing to stop: no daemon is listening on {}\n", s.socket().display()),
+        "exactly the one line, exactly once"
+    );
+}
+
+#[test]
+fn stop_brings_a_whole_wisp_run_down_with_exit_0() {
+    require_display("stop_brings_a_whole_wisp_run_down_with_exit_0");
+    let s = scratch("stop-run");
+    let mut running = s.spawn_words(&wisp(), "run --stub --backend plain");
+    // The HUD starting is how the launcher says it passed its readiness check.
+    let _hud = s.wait_for_child("wisp-hud");
+    let _daemon = s.wait_for_child("wispd");
+
+    let out = s.command(&wisp()).arg("stop").output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let status = running.wait_within(TIMEOUT);
+    let stderr = running.stderr();
+    assert_eq!(status.code(), Some(0), "a daemon that exited 0 is a clean stop:\n{stderr}");
+    assert!(stderr.contains("wispd exited"), "the launcher says which child ended it: {stderr}");
+    assert!(s.procs().is_empty(), "the HUD went with it; left behind: {:?}", s.procs());
+    assert!(!s.socket().exists());
+}
+
+#[test]
+fn stop_leaves_the_wrapped_command_running() {
+    require_display("stop_leaves_the_wrapped_command_running");
+    let s = scratch("stop-run-command");
+    let mut running = s.spawn_words(&wisp(), RUN_STUB_FOR_THREE_SECONDS);
+    let _hud = s.wait_for_child("wisp-hud");
+    let _daemon = s.wait_for_child("wispd");
+
+    assert_eq!(s.command(&wisp()).arg("stop").output().unwrap().status.code(), Some(0));
+
+    // The spec's ruling, restated for `stop`: the game is what the user
+    // launched, and stopping the overlay is no reason to close it.
+    sleep_ms(700);
+    assert!(running.alive(), "wisp run gave up while the command was still running");
+    let status = running.wait_within(TIMEOUT);
+    let stderr = running.stderr();
+    assert_eq!(status.code(), Some(0), "the command's own status comes back:\n{stderr}");
     assert!(s.procs().is_empty(), "left behind: {:?}", s.procs());
 }
 

@@ -12,3 +12,7 @@ repository = "https://github.com/JDS300/wisp"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

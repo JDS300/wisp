@@ -18,6 +18,7 @@ use wisp_config::layout::{Anchor, BlockKind};
 pub enum Command {
     Run(RunArgs),
     Status { json: bool },
+    Stop,
     Doctor(DoctorArgs),
     Config(ConfigCommand),
     Hud(HudCommand),
@@ -144,6 +145,7 @@ pub fn parse(argv: &[OsString]) -> Command {
             [flag] if flag == OsStr::new("--json") => Command::Status { json: true },
             _ => Command::Usage,
         },
+        Some("stop") if args.is_empty() => Command::Stop,
         Some("doctor") => doctor_command(args),
         Some("config") => config_command(args),
         Some("hud") => hud_command(args),
@@ -459,6 +461,13 @@ mod tests {
         assert_eq!(parse(&argv(&["wisp", "status"])), Command::Status { json: false });
         assert_eq!(parse(&argv(&["wisp", "status", "--json"])), Command::Status { json: true });
         assert_eq!(parse(&argv(&["wisp", "status", "--nonsense"])), Command::Usage);
+    }
+
+    #[test]
+    fn stop_takes_no_arguments() {
+        assert_eq!(parse(&argv(&["wisp", "stop"])), Command::Stop);
+        assert_eq!(parse(&argv(&["wisp", "stop", "--now"])), Command::Usage);
+        assert_eq!(parse(&argv(&["wisp", "stop", "extra"])), Command::Usage);
     }
 
     #[test]

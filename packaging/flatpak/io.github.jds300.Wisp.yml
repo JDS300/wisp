@@ -14,6 +14,13 @@ finish-args:
   - --socket=x11
   - --socket=wayland
   - --filesystem=host:ro
+  # The tray registers a StatusNotifierItem with the session bus's watcher.
+  # Without this the registration fails and wisp-hud prints "no tray: …" and
+  # carries on, which is the correct degradation and the reason this line is
+  # added deliberately rather than assumed. Nothing else about the sandbox
+  # changes: no --share=ipc, no broader bus access, no ownership of a name —
+  # inside a Flatpak the tray skips the well-known name instead (T5).
+  - --talk-name=org.kde.StatusNotifierWatcher
 modules:
   - name: wisp
     buildsystem: simple

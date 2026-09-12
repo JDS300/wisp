@@ -118,9 +118,20 @@ bottom edge:
 | `H` | toggle `hidden` |
 | `Esc`, or the chord again | save and exit |
 
-`Esc` and the chord both save the layout atomically and exit HUD mode. The
-game keeps receiving every key it received before — the HUD reads keyboard
-state, it never consumes an event.
+`Esc` and the chord both save the layout atomically and exit HUD mode.
+
+On a layer-shell compositor (KDE, Sway, Hyprland, river) the HUD asks for the
+keyboard for as long as HUD mode lasts, so the arrow keys move the block and
+**not** the character; the compositor gives focus back on exit. If it will not
+— `wisp-hud` says so, once — the keys behave as they do on X11. Under
+gamescope and on the plain-window backend the HUD still only *reads* keyboard
+state and consumes nothing, so a HUD-mode key reaches the game as well;
+`wisp hud place` from a terminal is the leak-free way to arrange the layout
+there.
+
+The arrows, `Tab`, `Esc` and `Shift` are the same key on any layout. `F`, `H`,
+`[` and `]` are physical positions — the keys under those caps on a US layout
+— which is what the help strip along the bottom of the screen is for.
 
 ### Editing the layout from a terminal — `wisp hud`
 
@@ -180,6 +191,26 @@ width = 330
 rows = 12
 ```
 
+## Running it
+
+| Command | Effect |
+|---|---|
+| `wisp run` | starts the daemon and the HUD, and follows them; `wisp run -- <command>` wraps a launch |
+| `wisp stop` | asks a running daemon to stop; the HUD and the launcher go with it, and a wrapped game does not. Nothing listening is a clean exit and one line |
+| `wisp status` | one snapshot as text, `--json` for the line the daemon sent. `log time:` is the last line's timestamp; `log:` is the file being tailed |
+| `wisp doctor` | what a launch *would* do: the config path, which log it resolved and how, the spell files, the backend and why |
+| `wisp config path \| show \| set <key> <value>` | the config file |
+| `wisp hud …` | the layout, from a terminal — see above |
+| `wisp version` | the version, which is also what Gear Lever shows |
+
+While Wisp is running there is a wisp in the system tray, on any desktop with
+a StatusNotifierItem host — Plasma, GNOME with the AppIndicator extension,
+every wlroots bar. Its menu carries a status line (`Wisp 0.3.0 ·
+eqlog_Daggo_freeport.txt · fighting 42 s`), a **HUD mode** checkbox that does
+exactly what the chord does, **Open config**, and **Stop Wisp**. Left-clicking
+the icon toggles HUD mode. Where there is no host — gamescope's game mode, a
+bare `Xvfb` — `wisp-hud` prints one `no tray:` line and carries on.
+
 ## Installing
 
 Two prebuilt artifacts — the tarball and the AppImage — plus a local Flatpak
@@ -200,6 +231,10 @@ repository checked out:
   `org.flatpak.Builder` itself plus the `org.freedesktop.Platform` and `Sdk`
   25.08 and the `rust-stable` extension — four downloads, since none of them
   is installed on a fresh machine.
+
+Releases are cut with `packaging/cut-release.sh` and come in two channels —
+live and beta — which decide what an installed AppImage is offered next.
+[`docs/RELEASING.md`](docs/RELEASING.md) is the whole of it.
 
 First run, whichever artifact you used:
 
@@ -235,6 +270,7 @@ gamescope's from the start, so the Flatpak is natural there instead.
 | 3 | [Encounters — DPS, damage taken, healing, group rows](docs/specs/2026-09-08-spec-3-encounters.md) | Implemented — verified live over EverQuest on the desktop (personal line tracking DPS, group rows without you); close, linger, zoning and HUD restart not specifically exercised · [implementation plan](docs/plans/2026-09-08-spec-3-encounters.md) |
 | 4 | [Packaging and distribution](docs/specs/2026-09-09-spec-4-packaging.md) | Implemented — build, test, clippy, the musl static build, `packaging/release.sh` and the local Flatpak build verified locally; the first CI run on a pushed tag, the Flatpak's live checks against the game, and Milestone 6 (live over EverQuest Legends on the desktop) pending JDS300 · [implementation plan](docs/plans/2026-09-09-spec-4-packaging.md) |
 | 5 | [The HUD — Console look, keyboard layout mode, TOML config](docs/specs/2026-09-10-spec-5-the-hud.md) | Implemented, automated gates green — Milestone 4 (HUD mode over the running game) and Milestone 7 (live verification) pending JDS300 · [implementation plan](docs/plans/2026-09-10-spec-5-the-hud.md) |
+| 6 | [Running it — `wisp stop`, the tray, release channels](docs/specs/2026-09-11-spec-6-running-it.md) | Implemented, automated gates green — Milestone 6 (the tray live on Plasma over the game), Milestone 8 (HUD mode owning the keyboard over the game), Milestone 9 (the gamescope keyboard-grab spike) and Milestone 10 (the delivery path end to end) pending JDS300 · [implementation plan](docs/plans/2026-09-11-spec-6-running-it.md) |
 
 Spec 1's overlay backends and log parser are implemented and covered by
 automated tests. **On 2026-09-08, JDS300 verified both the layer-shell and
