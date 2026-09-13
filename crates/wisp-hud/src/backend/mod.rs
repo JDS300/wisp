@@ -60,18 +60,30 @@ pub trait OverlayBackend {
 
     /// Ask for, or give back, the keyboard.
     ///
-    /// `true` means this backend now receives key events and the caller must
-    /// read them with `drain_keys` instead of polling. The default is a
-    /// no-op returning `false`, which is the right answer on every X11
-    /// backend -- Spec 5 §3.1 stands there unchanged, and `XQueryKeymap` on
-    /// the HUD's own connection keeps working because the game still holds
-    /// the keyboard.
-    fn take_keyboard(&mut self, _exclusive: bool) -> bool {
+    /// Does not report whether the compositor actually granted it --
+    /// `keyboard_focused` is the per-frame answer to that, because the grant
+    /// can arrive late (a tray popup still closing on KWin when this is
+    /// called) or leave again mid-mode (a focus bounce), and either change
+    /// has to be visible on the very next frame rather than only at the
+    /// moment this was called. The default is a no-op, which is the right
+    /// answer on every X11 backend -- Spec 5 §3.1 stands there unchanged,
+    /// and `XQueryKeymap` on the HUD's own connection keeps working because
+    /// the game still holds the keyboard.
+    fn take_keyboard(&mut self, _exclusive: bool) {}
+
+    /// Whether the compositor currently has the HUD's keyboard, i.e.
+    /// whether `drain_keys` is the right source for this frame's keys
+    /// rather than the poller. The default is `false`, which is the right
+    /// answer on every X11 backend, so the caller keeps polling.
+    fn keyboard_focused(&self) -> bool {
         false
     }
 
-    /// Key events since the last call, in order. Empty on X11 backends, and
-    /// only worth calling when `take_keyboard(true)` returned `true`.
+    /// Key events since the last call, in order. Empty on X11 backends.
+    /// Worth draining every frame while asking for the keyboard, focused or
+    /// not: it is what dispatches the connection, which is how a late
+    /// grant, or losing it again mid-mode, ever shows up in
+    /// `keyboard_focused` at all.
     fn drain_keys(&mut self) -> Vec<KeyEvent> {
         Vec::new()
     }

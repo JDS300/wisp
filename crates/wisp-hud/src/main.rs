@@ -158,7 +158,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this one is maintained by events, because that is all there is once
     // the compositor has moved focus to the HUD and polling has gone blind.
     let mut held: std::collections::HashSet<Key> = std::collections::HashSet::new();
-    let mut keyboard_taken = false;
+    // When the current HUD-mode entry asked for the keyboard, so the late
+    // notice below knows how long it has been waiting. `None` outside HUD
+    // mode.
+    let mut asked_at: Option<Instant> = None;
+    // Whether `surface.keyboard_focused()` has been true at least once since
+    // the current entry asked -- the tray path's own popup can still be
+    // closing when the ask happens, so "not focused yet" this frame is not
+    // "denied".
+    let mut ever_focused = false;
+    // Whether this entry has already printed the late notice, so it says
+    // its piece once per entry rather than once per frame.
+    let mut notice_printed = false;
 
     loop {
         let mut redraw = false;
@@ -228,10 +239,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let mut shift_held = false;
-        if keyboard_taken {
-            // The compositor has the poller's own connection blind (Spec 6
-            // §4.5): every key, including the one that leaves the mode,
-            // arrives as a `wl_keyboard` event instead.
+        if hud_mode.active {
+            // Pumped every frame regardless of focus: this is the read that
+            // dispatches the connection, so a late `enter` (the tray path's
+            // own popup still closing when the ask happened) and a mid-mode
+            // `leave` both show up in `keyboard_focused()` below the moment
+            // they happen, rather than only on frames that already believed
+            // themselves focused.
             for event in surface.drain_keys() {
                 if event.pressed {
                     held.insert(event.key);
@@ -239,25 +253,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     held.remove(&event.key);
                 }
             }
-            shift_held = held.contains(&Key::Shift);
-            pending_keys.extend(edges.update(now, &held));
-        } else if let Some(kb) = &mut keyboard {
-            match kb.poll() {
-                Ok(down) => {
-                    // A poll that starts working again is worth reporting on
-                    // if it fails again later -- a fresh occurrence, not a
-                    // continuation of the one already printed.
-                    last_keyboard_error = None;
-                    shift_held = down.contains(&Key::Shift);
-                    pending_keys.extend(edges.update(now, &down));
-                }
-                Err(e) => {
-                    if last_keyboard_error.as_deref() != Some(e.as_str()) {
-                        eprintln!("wisp-hud: keyboard poll failed: {e}; HUD mode keys unavailable");
-                        last_keyboard_error = Some(e);
+            if surface.keyboard_focused() {
+                ever_focused = true;
+            }
+        }
+        match key_source(hud_mode.active, surface.keyboard_focused()) {
+            KeySource::Compositor => {
+                shift_held = held.contains(&Key::Shift);
+                pending_keys.extend(edges.update(now, &held));
+            }
+            KeySource::Poller => {
+                // Never the source with anything left over from the
+                // compositor: the backend already released everything it
+                // held on the way out, but a mid-mode focus bounce is
+                // exactly the moment `held` must not still look like keys
+                // are stuck to `edges`.
+                held.clear();
+                if let Some(kb) = &mut keyboard {
+                    match kb.poll() {
+                        Ok(down) => {
+                            // A poll that starts working again is worth
+                            // reporting on if it fails again later -- a
+                            // fresh occurrence, not a continuation of the
+                            // one already printed.
+                            last_keyboard_error = None;
+                            shift_held = down.contains(&Key::Shift);
+                            pending_keys.extend(edges.update(now, &down));
+                        }
+                        Err(e) => {
+                            if last_keyboard_error.as_deref() != Some(e.as_str()) {
+                                eprintln!("wisp-hud: keyboard poll failed: {e}; HUD mode keys unavailable");
+                                last_keyboard_error = Some(e);
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        // The tray path's popup can still be closing when HUD mode is
+        // entered, so the grant can take a moment; this says so once per
+        // entry rather than leaving a silent HUD the user cannot drive.
+        if hud_mode.active && late_notice(asked_at, now, ever_focused, notice_printed) {
+            eprintln!(
+                "wisp-hud: the compositor has not given the HUD the keyboard; HUD-mode keys will also reach the game until it does"
+            );
+            notice_printed = true;
         }
 
         for key in pending_keys {
@@ -272,18 +313,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let was_active = hud_mode.active;
             let action = hud_mode.handle(key, shift_held, &mut layout, NUDGE, SHIFT_NUDGE);
             if !was_active && hud_mode.active {
-                // Entering: ask for the keyboard. `false` on every X11
-                // backend and on a compositor that would not give it, and
-                // the poller keeps driving the keys exactly as in v0.2.0.
-                keyboard_taken = surface.take_keyboard(true);
+                // Entering: ask for the keyboard. A no-op on every X11
+                // backend, where `keyboard_focused()` stays false and the
+                // poller keeps driving the keys exactly as in v0.2.0; on the
+                // layer shell the grant can still be a moment away (the
+                // tray's own popup closing), which is what the late notice
+                // above is for.
+                surface.take_keyboard(true);
                 held.clear();
-            } else if was_active && !hud_mode.active && keyboard_taken {
-                // Leaving: give it back, and drop whatever the compositor
+                asked_at = Some(now);
+                ever_focused = false;
+                notice_printed = false;
+            } else if was_active && !hud_mode.active {
+                // Leaving: give the keyboard back regardless of whether the
+                // compositor ever actually granted it, and drop whatever it
                 // told us on the way out.
                 surface.take_keyboard(false);
                 let _ = surface.drain_keys();
-                keyboard_taken = false;
                 held.clear();
+                asked_at = None;
+                notice_printed = false;
             }
             match action {
                 Action::Nothing => {}
@@ -551,6 +600,41 @@ fn open_config(path: Option<&Path>) -> Option<std::process::Child> {
     }
 }
 
+/// Which source this frame's HUD-mode keys come from: the compositor's
+/// `wl_keyboard` events, once it has actually focused the HUD, or the X
+/// poller otherwise -- including before the compositor's grant has arrived,
+/// and again after it lets go mid-mode. A pure function of the two flags the
+/// main loop already has each frame, so the rule is a unit test rather than
+/// something only provable by pressing keys on a running compositor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeySource {
+    Compositor,
+    Poller,
+}
+
+fn key_source(hud_mode_active: bool, keyboard_focused: bool) -> KeySource {
+    if hud_mode_active && keyboard_focused {
+        KeySource::Compositor
+    } else {
+        KeySource::Poller
+    }
+}
+
+/// Whether this frame should print the "the compositor has not given the
+/// HUD the keyboard" notice: more than two seconds have passed since the
+/// current entry asked, focus has never arrived since that ask, and the
+/// notice has not already been printed for this entry. `asked_at` is `None`
+/// outside HUD mode (or before any entry has asked), which is never late.
+fn late_notice(asked_at: Option<Instant>, now: Instant, ever_focused: bool, printed: bool) -> bool {
+    if printed || ever_focused {
+        return false;
+    }
+    match asked_at {
+        Some(asked_at) => now.duration_since(asked_at) > Duration::from_secs(2),
+        None => false,
+    }
+}
+
 /// The line refusing `key`, or `None` to let [`HudMode::handle`] have it.
 ///
 /// HUD mode is unavailable while the config file's layout did not parse. What
@@ -650,6 +734,34 @@ fn startup_config() -> (Config, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_key_source_is_the_compositor_only_when_active_and_focused() {
+        assert_eq!(key_source(true, true), KeySource::Compositor);
+        assert_eq!(key_source(true, false), KeySource::Poller, "asked for the keyboard, but not focused yet (or not any more)");
+        assert_eq!(
+            key_source(false, true), KeySource::Poller,
+            "outside HUD mode the poller still has to watch for the chord, whatever `keyboard_focused` says"
+        );
+        assert_eq!(key_source(false, false), KeySource::Poller);
+    }
+
+    #[test]
+    fn the_late_notice_fires_once_after_two_seconds_of_no_focus() {
+        let t0 = Instant::now();
+        assert!(!late_notice(None, t0, false, false), "no entry has asked yet");
+        assert!(!late_notice(Some(t0), t0, false, false), "not two seconds yet");
+        assert!(!late_notice(Some(t0), t0 + Duration::from_millis(1999), false, false));
+        assert!(late_notice(Some(t0), t0 + Duration::from_millis(2001), false, false));
+        assert!(
+            !late_notice(Some(t0), t0 + Duration::from_secs(5), true, false),
+            "focus arrived at some point since the ask"
+        );
+        assert!(
+            !late_notice(Some(t0), t0 + Duration::from_secs(5), false, true),
+            "already printed for this entry"
+        );
+    }
 
     #[test]
     fn a_tray_event_is_the_chord_or_one_of_the_two_commands() {
