@@ -368,6 +368,12 @@ In HUD mode the main loop feeds `HudMode::handle` from `drain_keys` when
 returned `false`. The `keys::Key` set is unchanged; `Shift` is tracked from
 its own press and release like any other key.
 
+**Correction (2026-09-13).** `take_keyboard` no longer returns whether the
+grant landed; it is `fn take_keyboard(&mut self, exclusive: bool)`. A new
+`fn keyboard_focused(&self) -> bool` (default `false`) is the per-frame
+answer instead, read fresh every frame rather than once at the moment
+`take_keyboard` was called. See the paragraph below for why.
+
 **No libxkbcommon.** smithay-client-toolkit's keyboard helpers sit behind its
 `xkbcommon` feature, which binds the C library and would end the static musl
 build. The backend implements `Dispatch<wl_keyboard::WlKeyboard>` itself and
@@ -391,6 +397,32 @@ within 500 ms of asking for `Exclusive`, the backend reverts to `None`,
 prints `wisp-hud: the compositor did not give the HUD the keyboard; HUD-mode
 keys will also reach the game`, and `take_keyboard` returns `false` for the
 rest of the run. HUD mode still works as it does today.
+
+**Correction (2026-09-13).** The 500 ms handshake and the latch that
+remembered a refusal for the rest of the run are gone. JDS300 found, on
+0.3.0-beta.5, that entering HUD mode from the tray's own "HUD mode" entry
+left every key dead while the chord still worked: the tray path fires while
+Plasma's panel popup still holds keyboard focus, and KWin does not hand the
+exclusive layer surface its focus until that popup finishes closing — often
+past the 500 ms this spec allowed, so the ask timed out, the backend gave up,
+the latch remembered the refusal, and no later ask in that run ever tried
+again. A `wl_keyboard.leave` arriving mid-mode (a focus bounce) had a second,
+independent bug: the main loop's own `keyboard_taken` flag stayed true, so it
+kept reading a compositor that no longer had the keyboard and the poller,
+which could see it, was never asked. Both are replaced by one per-frame
+decision instead of a one-shot answer: each frame, while HUD mode is active,
+the main loop drains the compositor's connection (dispatching it, which is
+what lets a late `enter` or a mid-mode `leave` be noticed at all) and asks
+`keyboard_focused()` fresh; a `true` answer reads keys from `drain_keys`, a
+`false` one reads the poller, and this can flip either way on any frame with
+no memory of an earlier refusal. A late grant just starts working the moment
+it lands; a mid-mode loss falls back to the poller for exactly as long as the
+compositor does not have the keyboard, and resumes on the next `enter`. If
+the mode has been active for more than two seconds and the compositor has
+never once focused the HUD since it was asked, the HUD prints
+`wisp-hud: the compositor has not given the HUD the keyboard; HUD-mode keys
+will also reach the game until it does` once for that entry, rather than the
+old message's permanent "will also reach the game."
 
 **Gamescope stays as it is, with one candidate.** The Spec 5 spike showed
 that becoming gamescope's focus is a one-way door. An X keyboard *grab* — the
@@ -482,7 +514,7 @@ and the README's command table. `wisp status` gains the `log:` line (§4.3).
 | **GitHub's `make_latest` and `prerelease` flags drift.** | Both set explicitly on every release; the live-cut acceptance line checks `releases/latest` after each beta. |
 | **`cut-release.sh` edits three files with `sed` and gets one wrong.** | The script re-reads each file after editing and refuses if the version does not read back — the same round-trip discipline Spec 5's config writer uses — and the build-and-test step runs on the edited tree before anything is committed. |
 | **The tray's `Activate` (left click) toggling HUD mode surprises someone who expected a menu.** | Plasma opens the menu on right click and shows the title on hover; left click is the SNI convention for the item's primary action, and the mode toggle is the only action that is harmless to hit twice. If it annoys in Milestone 6, `Activate` becomes a no-op and the menu is the only surface — a one-line change. |
-| **KWin ignores `Exclusive` on the overlay layer, or gives focus but never gives it back.** | Milestone 8 runs ten cycles before anything ships; the 500 ms fallback covers the first case at runtime. The second would be a KWin bug to report, and the release fallback is the Spec 5 behaviour behind a config key `hud.take_keyboard = false`, added only if that day comes. |
+| **KWin ignores `Exclusive` on the overlay layer, or gives focus but never gives it back.** | Milestone 8 runs ten cycles before anything ships; the 500 ms fallback covers the first case at runtime. The second would be a KWin bug to report, and the release fallback is the Spec 5 behaviour behind a config key `hud.take_keyboard = false`, added only if that day comes. **Correction (2026-09-13).** The 500 ms fallback is gone -- a per-frame `keyboard_focused()` check replaced it after the tray path's popup timing proved 500 ms was not always enough (§4.5's correction), so "ignores `Exclusive`" now just means the poller keeps driving keys for as long as focus never arrives, with no timeout to race. |
 | **Physical-position letters confuse a non-QWERTY user.** | The help strip names the keys; six of the eight are layout-independent; the two letters and two brackets are documented as positions. Parsing the xkb keymap is the fix if it is ever asked for. |
 | **A game that reads the keyboard through evdev or a raw device, not the compositor.** | Wine under Xwayland reads through X. A game that bypassed the compositor would still see the arrows; nothing in user space can stop that, and the spec does not claim to. |
 | **`xdg-open` opens the config in something unhelpful.** | It opens what the desktop associates with plain text; that is the user's choice to make. `ksni` 0.3.6's dbusmenu items carry no tooltip field, so the menu entry cannot name the path itself — `wisp config path` prints it instead. |

@@ -52,7 +52,7 @@ struct AppState {
     /// currently reported as held.
     chord: ChordTracker,
     /// Whether `wl_keyboard.enter` has arrived since the last `leave` (or
-    /// since the keyboard was bound). `take_keyboard`'s handshake reads this.
+    /// since the keyboard was bound). `keyboard_focused` reads this.
     entered: bool,
 }
 
@@ -270,9 +270,6 @@ pub struct LayerShellBackend {
     state: Option<AppState>,
     pool: Option<SlotPool>,
     layer: Option<LayerSurface>,
-    /// Once a compositor has failed to give the HUD the keyboard, it is not
-    /// asked again for the rest of the run.
-    latch: KeyboardLatch,
 }
 
 impl LayerShellBackend {
@@ -286,7 +283,6 @@ impl LayerShellBackend {
             state: None,
             pool: None,
             layer: None,
-            latch: KeyboardLatch::default(),
         }
     }
 }
@@ -489,11 +485,11 @@ impl OverlayBackend for LayerShellBackend {
         Ok(())
     }
 
-    fn take_keyboard(&mut self, exclusive: bool) -> bool {
+    fn take_keyboard(&mut self, exclusive: bool) {
         let (Some(layer), Some(queue), Some(state)) =
             (self.layer.as_ref(), self.event_queue.as_mut(), self.state.as_mut())
         else {
-            return false;
+            return;
         };
 
         if !exclusive {
@@ -505,38 +501,23 @@ impl OverlayBackend for LayerShellBackend {
             let released = state.chord.release_all();
             state.keys.extend(released);
             state.entered = false;
-            return false;
+            return;
         }
 
-        if !self.latch.may_ask() {
-            return false;
-        }
-
+        // Ask, and look once: no more waiting here for the grant to arrive
+        // (beta.5's 500 ms handshake). A compositor that is still closing a
+        // tray popup answers late, and that is fine -- `keyboard_focused`
+        // picks it up on whichever later frame it lands on, once per frame,
+        // rather than this call blocking the frame the chord (or the tray's
+        // own click) was handled on. Asking twice in a row -- there is no
+        // latch any more -- is allowed and simply asks again.
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.commit();
-
-        // Bounded: §4.5's 500 ms. A compositor that ignores the switch must not
-        // hang the frame the chord was pressed on.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        loop {
-            let _ = queue.roundtrip(state);
-            match handshake(state.entered, std::time::Instant::now() >= deadline) {
-                Handshake::Granted => return true,
-                Handshake::Denied => break,
-                // A roundtrip returns as soon as the compositor answers the sync,
-                // which is at once; without this the loop would spin for 500 ms.
-                Handshake::KeepWaiting => std::thread::sleep(std::time::Duration::from_millis(10)),
-            }
-        }
-
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.commit();
         let _ = queue.roundtrip(state);
-        eprintln!(
-            "wisp-hud: the compositor did not give the HUD the keyboard; HUD-mode keys will also reach the game"
-        );
-        self.latch.deny();
-        false
+    }
+
+    fn keyboard_focused(&self) -> bool {
+        self.state.as_ref().is_some_and(|state| state.entered)
     }
 
     fn drain_keys(&mut self) -> Vec<KeyEvent> {
@@ -545,46 +526,13 @@ impl OverlayBackend for LayerShellBackend {
         };
         // The render loop only redraws when something changed, so `present`'s
         // own roundtrip cannot be relied on to read the socket: this is the read
-        // that delivers key events. It is called only inside HUD mode (main.rs),
-        // so outside it the connection is as quiet as it was in v0.2.0.
+        // that delivers key events -- and, since `keyboard_focused` only reads
+        // `state.entered` rather than dispatching anything itself, the read that
+        // notices a late `enter` or a mid-mode `leave` in the first place. It is
+        // called every frame while asking for the keyboard (main.rs), so outside
+        // HUD mode the connection is as quiet as it was in v0.2.0.
         let _ = queue.roundtrip(state);
         state.keys.drain(..).collect()
-    }
-}
-
-/// The exclusive-keyboard handshake as a decision, so the 500 ms rule is a
-/// unit test and not a compositor.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Handshake {
-    Granted,
-    KeepWaiting,
-    Denied,
-}
-
-pub(crate) fn handshake(entered: bool, deadline_passed: bool) -> Handshake {
-    if entered {
-        Handshake::Granted
-    } else if deadline_passed {
-        Handshake::Denied
-    } else {
-        Handshake::KeepWaiting
-    }
-}
-
-/// One latch: once a compositor has failed to give the HUD the keyboard, it
-/// is not asked again for the rest of the run.
-#[derive(Debug, Default)]
-pub(crate) struct KeyboardLatch {
-    denied: bool,
-}
-
-impl KeyboardLatch {
-    pub(crate) fn may_ask(&self) -> bool {
-        !self.denied
-    }
-
-    pub(crate) fn deny(&mut self) {
-        self.denied = true;
     }
 }
 
@@ -592,21 +540,33 @@ impl KeyboardLatch {
 mod tests {
     use super::*;
 
+    // `AppState` binds live Wayland globals (`RegistryState::new` and
+    // friends all want a real `GlobalList`), so it cannot be constructed
+    // as a fake here -- unlike `ChordTracker` (evdev.rs), which is exercised
+    // directly with synthetic evdev codes. What these tests can and do cover
+    // without a compositor: `LayerShellBackend` before `attach()` never
+    // claims focus, and the beta.5 latch is gone -- asking twice in a row no
+    // longer remembers a first refusal and skips the second ask.
+
     #[test]
-    fn the_handshake_waits_then_gives_up() {
-        assert_eq!(handshake(true, false), Handshake::Granted);
-        assert_eq!(handshake(true, true), Handshake::Granted, "an enter that arrived at the last moment still counts");
-        assert_eq!(handshake(false, false), Handshake::KeepWaiting);
-        assert_eq!(handshake(false, true), Handshake::Denied);
+    fn before_attach_the_keyboard_is_never_reported_focused() {
+        let backend = LayerShellBackend::new(None);
+        assert!(!backend.keyboard_focused());
     }
 
     #[test]
-    fn a_compositor_that_refused_once_is_not_asked_again() {
-        let mut latch = KeyboardLatch::default();
-        assert!(latch.may_ask());
-        latch.deny();
-        assert!(!latch.may_ask());
-        latch.deny();
-        assert!(!latch.may_ask(), "and it stays denied for the rest of the run");
+    fn asking_before_attach_is_harmless_and_repeatable_with_no_latch() {
+        // The beta.5 bug's other half: a compositor that never granted focus
+        // used to latch "denied" and refuse to ask again for the rest of the
+        // run. There is no latch field any more, so asking twice (or asking,
+        // giving back, and asking again) is just two calls with no memory
+        // between them.
+        let mut backend = LayerShellBackend::new(None);
+        backend.take_keyboard(true);
+        assert!(!backend.keyboard_focused());
+        backend.take_keyboard(true);
+        assert!(!backend.keyboard_focused(), "a second ask is not refused by a latch that no longer exists");
+        backend.take_keyboard(false);
+        assert!(!backend.keyboard_focused());
     }
 }
